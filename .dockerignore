@@ -1,0 +1,11 @@
+.env
+sub2api.db*
+server-debug*.log
+__pycache__/
+*.pyc
+.pytest_cache/
+cloud-deploy/postgres_data/
+cloud-deploy/redis_data/
+cloud-deploy/data/
+cloud-deploy/adapter_data/
+cloud-deploy/backups/

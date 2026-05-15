@@ -1,0 +1,173 @@
+services:
+  caddy:
+    image: public.ecr.aws/docker/library/caddy:2.9-alpine
+    container_name: sub2api-caddy
+    restart: unless-stopped
+    depends_on:
+      sub2api:
+        condition: service_healthy
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - ./caddy_data:/data
+      - ./caddy_config:/config
+    environment:
+      - PUBLIC_DOMAIN=${PUBLIC_DOMAIN:?PUBLIC_DOMAIN is required}
+      - ACME_EMAIL=${ACME_EMAIL:-}
+    networks:
+      - sub2api-network
+
+  sub2api:
+    image: ghcr.io/wei-shaw/sub2api:latest
+    container_name: sub2api
+    restart: unless-stopped
+    ulimits:
+      nofile:
+        soft: 100000
+        hard: 100000
+    volumes:
+      - ./data:/app/data
+    environment:
+      - AUTO_SETUP=true
+      - SERVER_HOST=0.0.0.0
+      - SERVER_PORT=8080
+      - SERVER_MODE=${SERVER_MODE:-release}
+      - RUN_MODE=${RUN_MODE:-standard}
+      - DATABASE_HOST=postgres
+      - DATABASE_PORT=5432
+      - DATABASE_USER=${POSTGRES_USER:-sub2api}
+      - DATABASE_PASSWORD=${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}
+      - DATABASE_DBNAME=${POSTGRES_DB:-sub2api}
+      - DATABASE_SSLMODE=disable
+      - DATABASE_MAX_OPEN_CONNS=${DATABASE_MAX_OPEN_CONNS:-50}
+      - DATABASE_MAX_IDLE_CONNS=${DATABASE_MAX_IDLE_CONNS:-10}
+      - DATABASE_CONN_MAX_LIFETIME_MINUTES=${DATABASE_CONN_MAX_LIFETIME_MINUTES:-30}
+      - DATABASE_CONN_MAX_IDLE_TIME_MINUTES=${DATABASE_CONN_MAX_IDLE_TIME_MINUTES:-5}
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - REDIS_PASSWORD=${REDIS_PASSWORD:-}
+      - REDIS_DB=${REDIS_DB:-0}
+      - REDIS_POOL_SIZE=${REDIS_POOL_SIZE:-1024}
+      - REDIS_MIN_IDLE_CONNS=${REDIS_MIN_IDLE_CONNS:-10}
+      - REDIS_ENABLE_TLS=false
+      - ADMIN_EMAIL=${ADMIN_EMAIL:-admin@sub2api.local}
+      - ADMIN_PASSWORD=${ADMIN_PASSWORD:-}
+      - JWT_SECRET=${JWT_SECRET:?JWT_SECRET is required}
+      - JWT_EXPIRE_HOUR=${JWT_EXPIRE_HOUR:-24}
+      - TOTP_ENCRYPTION_KEY=${TOTP_ENCRYPTION_KEY:?TOTP_ENCRYPTION_KEY is required}
+      - TZ=${TZ:-Asia/Shanghai}
+      - SECURITY_URL_ALLOWLIST_ENABLED=${SECURITY_URL_ALLOWLIST_ENABLED:-false}
+      - SECURITY_URL_ALLOWLIST_ALLOW_INSECURE_HTTP=${SECURITY_URL_ALLOWLIST_ALLOW_INSECURE_HTTP:-true}
+      - SECURITY_URL_ALLOWLIST_ALLOW_PRIVATE_HOSTS=${SECURITY_URL_ALLOWLIST_ALLOW_PRIVATE_HOSTS:-true}
+      - UPDATE_PROXY_URL=${UPDATE_PROXY_URL:-}
+      - OPS_ENABLED=${OPS_ENABLED:-true}
+      - DASHBOARD_AGGREGATION_ENABLED=${DASHBOARD_AGGREGATION_ENABLED:-true}
+      - GATEWAY_MAX_CONNS_PER_HOST=${GATEWAY_MAX_CONNS_PER_HOST:-2048}
+      - GATEWAY_MAX_IDLE_CONNS=${GATEWAY_MAX_IDLE_CONNS:-8192}
+      - GATEWAY_MAX_IDLE_CONNS_PER_HOST=${GATEWAY_MAX_IDLE_CONNS_PER_HOST:-4096}
+      - GATEWAY_SCHEDULING_FALLBACK_WAIT_TIMEOUT=${GATEWAY_SCHEDULING_FALLBACK_WAIT_TIMEOUT:-30s}
+      - GATEWAY_SCHEDULING_FALLBACK_MAX_WAITING=${GATEWAY_SCHEDULING_FALLBACK_MAX_WAITING:-100}
+      - GATEWAY_IMAGE_STREAM_DATA_INTERVAL_TIMEOUT=${GATEWAY_IMAGE_STREAM_DATA_INTERVAL_TIMEOUT:-900}
+      - GATEWAY_IMAGE_STREAM_KEEPALIVE_INTERVAL=${GATEWAY_IMAGE_STREAM_KEEPALIVE_INTERVAL:-10}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - sub2api-network
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-T", "5", "-O", "/dev/null", "http://localhost:8080/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+
+  nvidia-adapter:
+    build:
+      context: ..
+      dockerfile: cloud-deploy/adapter/Dockerfile
+    container_name: nvidia-adapter
+    restart: unless-stopped
+    volumes:
+      - ./adapter_data:/app/data
+    environment:
+      - ADMIN_TOKEN=${ADAPTER_ADMIN_TOKEN:?ADAPTER_ADMIN_TOKEN is required}
+      - SUB2API_ACCESS_TOKEN=${ADAPTER_CLIENT_TOKEN:?ADAPTER_CLIENT_TOKEN is required}
+      - DEFAULT_CLIENT_TOKEN=${ADAPTER_CLIENT_TOKEN:?ADAPTER_CLIENT_TOKEN is required}
+      - DEFAULT_CLIENT_QUOTA_TOKENS=-1
+      - BIND_HOST=0.0.0.0
+      - PORT=8000
+      - DATABASE_PATH=/app/data/nvidia-adapter.db
+      - UPSTREAM_URL=https://integrate.api.nvidia.com/v1/chat/completions
+      - REQUEST_TIMEOUT_SECONDS=${ADAPTER_REQUEST_TIMEOUT_SECONDS:-180}
+      - KEY_COOLDOWN_SECONDS=${ADAPTER_KEY_COOLDOWN_SECONDS:-90}
+      - MAX_RETRIES=${ADAPTER_MAX_RETRIES:-10}
+      - KEY_MAX_IN_FLIGHT=${ADAPTER_KEY_MAX_IN_FLIGHT:-1}
+      - KEY_QUEUE_WAIT_SECONDS=${ADAPTER_KEY_QUEUE_WAIT_SECONDS:-30}
+      - MAX_REQUEST_BODY_BYTES=${ADAPTER_MAX_REQUEST_BODY_BYTES:-8388608}
+      - NVIDIA_API_KEYS=${NVIDIA_API_KEYS:?NVIDIA_API_KEYS is required}
+    networks:
+      - sub2api-network
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=5).read()"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+
+  postgres:
+    image: public.ecr.aws/docker/library/postgres:18-alpine
+    container_name: sub2api-postgres
+    restart: unless-stopped
+    ulimits:
+      nofile:
+        soft: 100000
+        hard: 100000
+    volumes:
+      - ./postgres_data:/var/lib/postgresql/data
+    environment:
+      - POSTGRES_USER=${POSTGRES_USER:-sub2api}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}
+      - POSTGRES_DB=${POSTGRES_DB:-sub2api}
+      - PGDATA=/var/lib/postgresql/data
+      - TZ=${TZ:-Asia/Shanghai}
+    networks:
+      - sub2api-network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-sub2api} -d ${POSTGRES_DB:-sub2api}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+  redis:
+    image: public.ecr.aws/docker/library/redis:8-alpine
+    container_name: sub2api-redis
+    restart: unless-stopped
+    ulimits:
+      nofile:
+        soft: 100000
+        hard: 100000
+    volumes:
+      - ./redis_data:/data
+    command: >
+      sh -c 'redis-server --save 60 1 --appendonly yes --appendfsync everysec
+      ${REDIS_PASSWORD:+--requirepass "$REDIS_PASSWORD"}'
+    environment:
+      - TZ=${TZ:-Asia/Shanghai}
+      - REDISCLI_AUTH=${REDIS_PASSWORD:-}
+    networks:
+      - sub2api-network
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 5s
+
+networks:
+  sub2api-network:
+    driver: bridge
