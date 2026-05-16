@@ -69,7 +69,7 @@ DeepSeek V4 Pro: restricted to trusted users until stable
 
 ## 4. Test From Sub2API Public Endpoint
 
-Use a user API key created in Sub2API:
+Use a user API key created in Sub2API and bound to the NVIDIA group:
 
 ```bash
 curl "https://YOUR_DOMAIN/v1/chat/completions" \
@@ -88,3 +88,11 @@ Also test the adapter directly from inside Docker:
 ```bash
 docker compose exec nvidia-adapter python /app/probe_upstream.py --model qwen3-coder-480b --timeout 60
 ```
+
+For production verification that also checks `usage_logs`, run:
+
+```bash
+NVIDIA_TEST_KEY='sk-user-key-bound-to-nvidia-group' ./scripts/verify-endpoints.sh
+```
+
+The admin UI test button may report that this OpenAI-compatible channel does not support the OpenAI Responses API. That is expected for some third-party compatible upstreams. The authoritative test for this adapter is a real `/v1/chat/completions` call through a Sub2API user key plus a matching `usage_logs` row.

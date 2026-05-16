@@ -31,11 +31,11 @@ echo
 echo "== NVIDIA adapter models =="
 docker compose exec -T nvidia-adapter python - <<PY
 import json
-import os
 import urllib.request
+token = """${ADAPTER_CLIENT_TOKEN}"""
 req = urllib.request.Request(
     "http://127.0.0.1:8000/v1/models",
-    headers={"Authorization": "Bearer " + os.environ["DEFAULT_CLIENT_TOKEN"]},
+    headers={"Authorization": "Bearer " + token},
 )
 print(urllib.request.urlopen(req, timeout=5).read().decode())
 PY

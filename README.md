@@ -1,151 +1,101 @@
-# sub2api NVIDIA 多用户中转站
+﻿# sub2api NVIDIA + GPT OAuth Gateway
 
-> 要上云做成正式站点，请优先看 [cloud-deploy/README.md](cloud-deploy/README.md)。那里已经准备好 Cloudflare + Caddy + Sub2API + NVIDIA Adapter 的 Docker Compose 部署包。
+This repository contains a production-ready deployment wrapper around Sub2API plus a lightweight NVIDIA NIM adapter.
 
-这是一个参照 `sub2api` 思路实现的 NVIDIA Build / NVIDIA NIM 专用中转站：
-
-- OpenAI-compatible API: `/v1/models`、`/v1/chat/completions`
-- 10 个 NVIDIA `nvapi-...` key 作为上游号池轮询
-- 多用户客户端 token，用户之间独立统计
-- 本地 SQLite 账本，记录请求数、Token 用量、余额、平均响应时间、错误
-- 内置可视化仪表盘
-- 支持模型切换：`deepseekv4-pro`、`kimi-k2.6`、`glm-5.1`
-
-## 启动
-
-```powershell
-.\start.ps1
-```
-
-服务默认监听 `.env` 里的：
+It is designed for this architecture:
 
 ```text
-BIND_HOST=0.0.0.0
-PORT=8000
+Client / SDK
+  -> https://Zteapi.com
+  -> Caddy HTTPS reverse proxy
+  -> Sub2API
+  -> NVIDIA Adapter -> NVIDIA NIM API keys
+  -> OpenAI OAuth accounts -> OpenAI upstream
 ```
 
-如果只想本机访问，把 `BIND_HOST` 改回 `127.0.0.1`。
+Sub2API remains the main control plane: users, API keys, groups, quotas, pricing, usage logs, dashboards and admin operations. The NVIDIA adapter only hides and schedules the NVIDIA `nvapi-...` key pool behind an OpenAI-compatible local upstream.
 
-## 仪表盘
+## What Is Included
 
-打开：
+- OpenAI-compatible endpoints: `/v1/models`, `/v1/chat/completions`, `/v1/responses` through Sub2API.
+- NVIDIA adapter models:
+  - `deepseekv4-pro`
+  - `kimi-k2.6`
+  - `glm-5.1`
+  - `llama-3.3-70b`
+  - `nemotron-super-49b`
+  - `qwen3-next-80b`
+  - `qwen3-coder-480b`
+- GPT / OpenAI OAuth accounts managed directly in Sub2API groups.
+- Docker deployment with Caddy, Sub2API, PostgreSQL, Redis and the NVIDIA adapter.
+- Log rotation, backup scripts, health checks and end-to-end verification scripts.
+
+## Current Production Layout
+
+The current production server uses:
 
 ```text
-http://127.0.0.1:8000/dashboard?token=你的_ADMIN_TOKEN
+Domain: Zteapi.com
+Server path: /opt/sub2api-nvidia/cloud-deploy
+Public HTTPS: Caddy on ports 80/443
+Internal Sub2API: sub2api:8080
+Internal NVIDIA Adapter: nvidia-adapter:8000
+Database: PostgreSQL container
+Cache: Redis container
 ```
 
-`ADMIN_TOKEN` 在 `.env` 里。仪表盘可以看到：
+Do not commit production `.env`, account pools, database folders, Caddy data or backups. The repository ignores those files by default.
 
-- 总请求数
-- 总 Token
-- 本地 Token 余额
-- 平均响应时间
-- 成功率
-- 用户用量
-- 模型用量
-- 上游 key 池成功、失败、冷却状态
-- 最近请求
+## Quick Operations
 
-说明：NVIDIA Build/NIM 当前没有在本项目中接入“官方账号余额查询”接口，所以这里的余额是你给每个用户分配的本地 Token 配额余额。
+On the server:
 
-## 给别人发 API Key
-
-方式一：在仪表盘创建用户。
-
-方式二：命令行创建：
-
-```powershell
-python .\server.py --create-user alice --quota 1000000 --note "team-a"
+```bash
+cd /opt/sub2api-nvidia/cloud-deploy
+docker compose ps
+./scripts/health-check.sh
 ```
 
-命令会输出一个 `sk-...` token。这个 token 只显示一次。
+Verify real user-facing calls and usage logging:
 
-## 用户调用方式
-
-客户端配置：
-
-```text
-Base URL: http://你的服务器IP:8000/v1
-API Key: sk-...
-Model: deepseekv4-pro / kimi-k2.6 / glm-5.1
+```bash
+NVIDIA_TEST_KEY='sk-...' GPT_TEST_KEY='sk-...' ./scripts/verify-endpoints.sh
 ```
 
-Python OpenAI SDK 示例：
+Create a complete server-side backup:
 
-```python
-from openai import OpenAI
-
-client = OpenAI(
-    base_url="http://127.0.0.1:8000/v1",
-    api_key="sk-用户自己的token",
-)
-
-resp = client.chat.completions.create(
-    model="deepseekv4-pro",
-    messages=[{"role": "user", "content": "你好"}],
-)
-print(resp.choices[0].message.content)
+```bash
+./scripts/backup.sh
+ls -lh backups | tail -20
 ```
 
-切换模型时只改 `model`：
+## Local Adapter Development
 
-```text
-deepseekv4-pro -> deepseek-ai/deepseek-v4-pro
-kimi-k2.6      -> moonshotai/kimi-k2.6
-glm-5.1        -> z-ai/glm-5.1
-```
-
-## 管理接口
-
-所有 Admin API 都需要：
-
-```text
-Authorization: Bearer 你的_ADMIN_TOKEN
-```
-
-接口：
-
-```text
-GET  /api/admin/summary
-GET  /api/admin/users
-POST /api/admin/users
-GET  /api/admin/pool
-```
-
-创建用户示例：
-
-```powershell
-$admin = (Get-Content .\.env | Where-Object { $_ -match '^ADMIN_TOKEN=' }) -replace '^ADMIN_TOKEN=', ''
-$headers = @{ Authorization = "Bearer $admin"; "Content-Type" = "application/json" }
-$body = @{ name = "bob"; quota_tokens = 500000; note = "friend" } | ConvertTo-Json
-Invoke-RestMethod http://127.0.0.1:8000/api/admin/users -Method Post -Headers $headers -Body $body
-```
-
-## 本地验证
+The adapter can be tested locally without running the full Sub2API stack:
 
 ```powershell
 python .\server.py --check-config
-python -m unittest discover -s tests
+python -m unittest discover -s tests -v
 ```
 
-端到端检查：
+Required local `.env` values for adapter-only runs:
 
-```powershell
-.\run_local_check.ps1
+```text
+ADMIN_TOKEN=replace-with-admin-token
+DEFAULT_CLIENT_TOKEN=replace-with-client-token
+NVIDIA_API_KEYS=nvapi-xxx,nvapi-yyy
 ```
 
-直接探测 NVIDIA 上游：
+## Documentation
 
-```powershell
-python .\probe_upstream.py --model deepseekv4-pro --timeout 60
-python .\probe_upstream.py --all-models --timeout 60
-python .\probe_upstream.py --all-models --all-keys --timeout 60
-```
+- [Cloud deployment guide](cloud-deploy/README.md)
+- [NVIDIA channel setup](cloud-deploy/SUB2API_NVIDIA_CHANNEL.md)
+- [NVIDIA account pool](docs/account-pool.md)
+- [Production operations runbook](docs/production-runbook.md)
 
-## 上线建议
+## Security Notes
 
-- 不要公开 `.env`、NVIDIA API key、账号密码。
-- `ADMIN_TOKEN` 和用户 `sk-...` token 分开保存。
-- 公网部署建议放到 Nginx/Caddy 后面，启用 HTTPS。
-- 如果开放给很多人用，建议给每个用户设置配额，不要全部设成不限额。
-- `sub2api.db*` 是用量账本，已经在 `.gitignore` 里。
+- Rotate any key that has ever appeared in chat, logs or screenshots.
+- Keep Sub2API user API keys separate by group: NVIDIA keys should bind to the NVIDIA group; GPT OAuth keys should bind to the GPT group.
+- Keep `cloud-deploy/secrets/`, `cloud-deploy/.env`, `cloud-deploy/postgres_data/`, `cloud-deploy/redis_data/`, `cloud-deploy/adapter_data/`, `cloud-deploy/caddy_data/` and `cloud-deploy/backups/` out of Git.
+- Backups are private because they include `.env`, Caddy certificates and NVIDIA account credentials.

@@ -30,6 +30,7 @@ DEFAULT_KEY_MAX_IN_FLIGHT = 1
 DEFAULT_KEY_QUEUE_WAIT_SECONDS = 30
 DEFAULT_MAX_REQUEST_BODY_BYTES = 8 * 1024 * 1024
 DEFAULT_DATABASE_PATH = "sub2api.db"
+DEFAULT_ACCESS_LOG_HEALTH = False
 
 MODEL_ALIASES = {
     "deepseekv4-pro": "deepseek-ai/deepseek-v4-pro",
@@ -120,6 +121,7 @@ class AppConfig:
     key_max_in_flight: int
     key_queue_wait_seconds: int
     max_request_body_bytes: int
+    access_log_health: bool
     api_keys: List[str]
     account_credentials: List[NvidiaAccountCredential]
 
@@ -568,6 +570,14 @@ def parse_bool(value: Any, default: bool = True) -> bool:
     raise ValueError(f"Invalid boolean value: {value}")
 
 
+def parse_bool_env(name: str, default: bool = False) -> bool:
+    value = os.environ.get(name)
+    try:
+        return parse_bool(value, default=default)
+    except ValueError as exc:
+        raise ConfigError(str(exc)) from exc
+
+
 def parse_account_line(line: str) -> Tuple[str, str, bool, str]:
     parts = [part.strip() for part in line.split("|")]
     if len(parts) < 2:
@@ -713,6 +723,7 @@ def load_config() -> AppConfig:
         key_max_in_flight=int(os.environ.get("KEY_MAX_IN_FLIGHT", str(DEFAULT_KEY_MAX_IN_FLIGHT))),
         key_queue_wait_seconds=int(os.environ.get("KEY_QUEUE_WAIT_SECONDS", str(DEFAULT_KEY_QUEUE_WAIT_SECONDS))),
         max_request_body_bytes=int(os.environ.get("MAX_REQUEST_BODY_BYTES", str(DEFAULT_MAX_REQUEST_BODY_BYTES))),
+        access_log_health=parse_bool_env("ACCESS_LOG_HEALTH", DEFAULT_ACCESS_LOG_HEALTH),
         api_keys=api_keys,
         account_credentials=account_credentials,
     )
@@ -1646,6 +1657,10 @@ class ProxyHandler(BaseHTTPRequestHandler):
         self.end_headers()
 
     def log_message(self, fmt: str, *args: Any) -> None:
+        if not self.config.access_log_health:
+            parsed = urlparse(getattr(self, "path", ""))
+            if parsed.path.rstrip("/") == "/health":
+                return
         logging.info("%s - %s", self.address_string(), fmt % args)
 
 
@@ -2012,6 +2027,7 @@ def main() -> None:
                     "key_max_in_flight": config.key_max_in_flight,
                     "key_queue_wait_seconds": config.key_queue_wait_seconds,
                     "max_request_body_bytes": config.max_request_body_bytes,
+                    "access_log_health": config.access_log_health,
                     "models": [model["id"] for model in MODEL_LIST],
                 },
                 ensure_ascii=False,

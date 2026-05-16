@@ -1,202 +1,244 @@
-# Cloudflare + Caddy + Sub2API + NVIDIA Adapter
+﻿# Cloud Deployment Guide
 
-This deployment matches the architecture used by full API gateways such as `api.longxiadev.store`:
+This directory deploys a complete Sub2API production stack:
 
 ```text
-Users
-  -> Cloudflare
+Internet users
   -> Caddy HTTPS reverse proxy
   -> Sub2API
+  -> PostgreSQL / Redis
   -> NVIDIA Adapter
-  -> NVIDIA NIM / build.nvidia.com API keys
+  -> NVIDIA NIM API
+
+Sub2API can also schedule OpenAI OAuth accounts directly for GPT models.
 ```
 
-Sub2API handles users, API keys, balances, pricing, groups, dashboards, logs, rate limits, and admin operations. The NVIDIA Adapter only hides and schedules your `nvapi-...` key pool.
+The current production domain is `Zteapi.com`. Replace it with your own domain for new deployments.
 
-HTTP/3 is not required. This Caddyfile exposes HTTP/1.1 and HTTP/2 on TCP 80/443. WebSocket works through Caddy automatically.
+## 1. Server Requirements
 
-## 1. Cloud Server
-
-Recommended:
+Recommended minimum:
 
 ```text
 Ubuntu 22.04 or 24.04
-2 CPU / 4 GB RAM / 40 GB SSD
-Open ports: 22, 80, 443
-Do not expose: 8000, 8080, 5432, 6379
+2 CPU / 4 GB RAM / 30-40 GB SSD
+Open inbound ports: 22, 80, 443
+Keep closed publicly: 8000, 8080, 5432, 6379
 ```
 
-## 2. Cloudflare
+The tested production path is:
 
-Create DNS:
+```bash
+/opt/sub2api-nvidia/cloud-deploy
+```
+
+## 2. DNS And TLS
+
+Point your domain to the server public IP:
 
 ```text
 Type: A
-Name: api
-Value: your server public IP
-Proxy: enabled
+Name: @ or desired subdomain
+Value: server public IP
 ```
 
-Cloudflare SSL/TLS:
+Caddy obtains and renews HTTPS certificates automatically. Cloudflare is optional. If you use Cloudflare, use `Full` or `Full (strict)` SSL/TLS, not `Flexible`.
 
-```text
-Mode: Full or Full (strict)
-WebSocket: enabled
-HTTP/3: optional
-Always Use HTTPS: enabled
-```
+## 3. Prepare Secrets
 
-Do not use Flexible SSL.
-
-## 3. Prepare `.env`
-
-On your local Windows machine:
-
-```powershell
-.\cloud-deploy\scripts\make-prod-env.ps1
-notepad .\cloud-deploy\.env
-```
-
-Edit at least:
-
-```text
-PUBLIC_DOMAIN=api.yourdomain.com
-ACME_EMAIL=you@example.com
-ADMIN_EMAIL=admin@example.com
-ADMIN_PASSWORD=your-strong-password
-```
-
-`make-prod-env.ps1` copies your existing `NVIDIA_API_KEYS` from the root `.env`.
-
-If you also keep NVIDIA login credentials in the adapter account pool, set this in the root `.env` before running the script:
-
-```text
-NVIDIA_ACCOUNT_POOL_FILE=nvidia-accounts.json
-```
-
-The script copies that ignored local file to `cloud-deploy/secrets/nvidia-accounts.json` and sets `NVIDIA_ACCOUNT_POOL_FILE=/app/secrets/nvidia-accounts.json` for the adapter.
-
-## 4. Upload
-
-Upload the whole project directory to the cloud server, for example:
+Create `cloud-deploy/.env` from `.env.example` and fill in real values:
 
 ```bash
-scp -r sub2api-https-build-nvidia-com-sub2api root@YOUR_SERVER_IP:/opt/sub2api-nvidia
+cp .env.example .env
+nano .env
 ```
 
-On the server:
+Required values:
+
+```text
+PUBLIC_DOMAIN=Zteapi.com
+ACME_EMAIL=admin@Zteapi.com
+ADMIN_EMAIL=admin@zteapi.com
+ADMIN_PASSWORD=strong-password
+JWT_SECRET=long-random-string
+TOTP_ENCRYPTION_KEY=long-random-string
+POSTGRES_PASSWORD=strong-random-string
+REDIS_PASSWORD=strong-random-string
+ADAPTER_ADMIN_TOKEN=long-random-string
+ADAPTER_CLIENT_TOKEN=sk-adapter-long-random-string
+NVIDIA_API_KEYS=nvapi-xxx,nvapi-yyy
+NVIDIA_ACCOUNT_POOL_FILE=/app/secrets/nvidia-accounts.json
+```
+
+Put NVIDIA login credentials only under:
+
+```text
+cloud-deploy/secrets/nvidia-accounts.json
+```
+
+This directory is ignored by Git.
+
+## 4. Deploy
 
 ```bash
 cd /opt/sub2api-nvidia/cloud-deploy
 chmod +x scripts/*.sh
-sudo ./scripts/install-docker-ubuntu.sh
-sudo ./scripts/deploy.sh
+./scripts/install-docker-ubuntu.sh
+./scripts/deploy.sh
 ```
 
-## 5. Login
+Check health:
 
-Open:
-
-```text
-https://YOUR_DOMAIN
+```bash
+docker compose ps
+./scripts/health-check.sh
 ```
 
-Login with `ADMIN_EMAIL` and `ADMIN_PASSWORD` from `cloud-deploy/.env`.
+## 5. Add The NVIDIA Channel In Sub2API
 
-## 6. Add The NVIDIA Channel
-
-Follow:
+Open `https://YOUR_DOMAIN`, log in as admin, then create an OpenAI-compatible channel:
 
 ```text
-cloud-deploy/SUB2API_NVIDIA_CHANNEL.md
-```
-
-Core channel values:
-
-```text
+Name: NVIDIA OpenAI Compatible
+Platform/provider: OpenAI compatible / OpenAI
 Base URL: http://nvidia-adapter:8000/v1
-API Key: ADAPTER_CLIENT_TOKEN from cloud-deploy/.env
-Models: deepseekv4-pro, kimi-k2.6, glm-5.1
+API Key: ADAPTER_CLIENT_TOKEN from .env
+Group: nvidia-openai
+Models: qwen3-next-80b, qwen3-coder-480b, llama-3.3-70b, nemotron-super-49b, kimi-k2.6, glm-5.1, deepseekv4-pro
 ```
 
-## 7. Verify
+The base URL is Docker-internal HTTP. It must not be exposed publicly.
 
-On the server:
+## 6. Add GPT / OpenAI OAuth Accounts
+
+Use Sub2API admin UI:
+
+```text
+Accounts -> Add account -> OpenAI -> OAuth
+Group: gpt or openai-oauth
+Proxy: leave empty first when the server is in a supported country/region
+```
+
+After OAuth authorization succeeds, create a user API key bound to the GPT group. Do not reuse a key bound to the NVIDIA group when testing GPT.
+
+## 7. Verify Real Calls And Usage Logs
+
+Run from the server:
 
 ```bash
 cd /opt/sub2api-nvidia/cloud-deploy
-sudo ./scripts/health-check.sh
+NVIDIA_TEST_KEY='sk-user-key-bound-to-nvidia-group' \
+GPT_TEST_KEY='sk-user-key-bound-to-gpt-group' \
+./scripts/verify-endpoints.sh
 ```
 
-Public API test:
+Expected result:
 
-```bash
-curl "https://YOUR_DOMAIN/v1/chat/completions" \
-  -H "Content-Type: application/json" \
-  -H "Authorization: Bearer USER_API_KEY_CREATED_IN_SUB2API" \
-  -d '{
-    "model": "kimi-k2.6",
-    "messages": [{"role": "user", "content": "Reply exactly: OK"}],
-    "max_tokens": 8,
-    "temperature": 0
-  }'
-```
+- NVIDIA response contains `NVIDIA_VERIFY_OK`.
+- GPT response contains `GPT_VERIFY_OK`.
+- The script prints new rows from `usage_logs`, including `input_tokens`, `output_tokens`, `total_tokens` and `total_cost`.
 
-## Operations
+## 8. Backup
 
-Logs:
-
-```bash
-docker compose logs -f sub2api
-docker compose logs -f nvidia-adapter
-docker compose logs -f caddy
-```
-
-Restart:
-
-```bash
-docker compose restart
-```
-
-Update Sub2API:
-
-```bash
-docker compose pull sub2api
-docker compose up -d sub2api
-```
-
-Backup:
+Create a full server-side backup:
 
 ```bash
 ./scripts/backup.sh
 ```
 
-The backup script stores compressed backups on the server only:
+Generated files:
 
 ```text
-cloud-deploy/backups/sub2api-postgres-*.sql.gz
-cloud-deploy/backups/sub2api-files-*.tar.gz
+backups/sub2api-postgres-YYYYMMDD-HHMMSS.sql.gz
+backups/sub2api-files-YYYYMMDD-HHMMSS.tar.gz
 ```
 
-Set `BACKUP_RETENTION_DAYS` in `.env` to control local retention. Keep enough free disk space, and move selected backups to external storage only when you are ready.
-
-Recommended adapter production limits:
+The files backup includes:
 
 ```text
-ADAPTER_KEY_MAX_IN_FLIGHT=1
-ADAPTER_KEY_QUEUE_WAIT_SECONDS=30
-ADAPTER_MAX_REQUEST_BODY_BYTES=8388608
+data/
+adapter_data/
+secrets/
+Caddyfile
+docker-compose.yml
+.env
+caddy_config/
+caddy_data/       when BACKUP_INCLUDE_CADDY_DATA=true
+redis_data/       when BACKUP_INCLUDE_REDIS_DATA=true
 ```
 
-These settings protect the NVIDIA key pool by allowing only one in-flight request per upstream key and rejecting oversized request bodies.
+Backups are sensitive. They include credentials and TLS private keys. Store them privately.
 
-## Security Checklist
+## 9. Restore Outline
 
-- Keep `.env` private.
-- Never expose `nvidia-adapter`, PostgreSQL, or Redis ports publicly.
-- Keep Cloudflare proxy enabled.
-- Use strong admin password.
-- Enable 2FA in Sub2API after first login.
-- Use user groups and per-user limits.
-- Start with low quotas until the upstream key pool is stable.
-- Back up `cloud-deploy/postgres_data`, `cloud-deploy/adapter_data`, and `cloud-deploy/.env`.
+1. Install Docker on a fresh server.
+2. Copy the project files to `/opt/sub2api-nvidia`.
+3. Extract `sub2api-files-*.tar.gz` inside `/opt/sub2api-nvidia/cloud-deploy`.
+4. Start database and Redis:
+
+   ```bash
+   docker compose up -d postgres redis
+   ```
+
+5. Restore PostgreSQL:
+
+   ```bash
+   gunzip -c backups/sub2api-postgres-YYYYMMDD-HHMMSS.sql.gz \
+     | docker compose exec -T postgres psql -U "${POSTGRES_USER:-sub2api}" "${POSTGRES_DB:-sub2api}"
+   ```
+
+6. Start the full stack:
+
+   ```bash
+   docker compose up -d
+   ./scripts/health-check.sh
+   ```
+
+## 10. Operational Maintenance
+
+Useful commands:
+
+```bash
+docker compose ps
+docker compose logs --tail=200 sub2api
+docker compose logs --tail=200 nvidia-adapter
+docker compose logs --tail=200 caddy
+docker system df
+du -sh backups data adapter_data postgres_data redis_data caddy_data
+```
+
+Update only Sub2API image:
+
+```bash
+docker compose pull sub2api
+docker compose up -d sub2api
+./scripts/health-check.sh
+```
+
+Rebuild only NVIDIA adapter after source changes:
+
+```bash
+docker compose build nvidia-adapter
+docker compose up -d nvidia-adapter
+./scripts/health-check.sh
+```
+
+The compose file configures Docker JSON log rotation by default:
+
+```text
+DOCKER_LOG_MAX_SIZE=20m
+DOCKER_LOG_MAX_FILE=5
+```
+
+This avoids health checks and access logs filling the server disk.
+
+## 11. Security Checklist
+
+- Change admin password after initial setup.
+- Enable 2FA for Sub2API admin if available.
+- Keep `ADAPTER_CLIENT_TOKEN` private; it can call the NVIDIA adapter.
+- Keep `secrets/nvidia-accounts.json` private.
+- Keep all user API keys private.
+- Rotate keys after accidental exposure.
+- Do not expose PostgreSQL, Redis, Sub2API internal port or NVIDIA adapter internal port to the public internet.
+- Keep regular backups and test restore steps before major upgrades.

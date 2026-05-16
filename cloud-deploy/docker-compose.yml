@@ -18,6 +18,11 @@ services:
       - ACME_EMAIL=${ACME_EMAIL:-}
     networks:
       - sub2api-network
+    logging: &default-logging
+      driver: json-file
+      options:
+        max-size: ${DOCKER_LOG_MAX_SIZE:-20m}
+        max-file: ${DOCKER_LOG_MAX_FILE:-5}
 
   sub2api:
     image: ghcr.io/wei-shaw/sub2api:latest
@@ -78,6 +83,7 @@ services:
         condition: service_healthy
     networks:
       - sub2api-network
+    logging: *default-logging
     healthcheck:
       test: ["CMD", "wget", "-q", "-T", "5", "-O", "/dev/null", "http://localhost:8080/health"]
       interval: 30s
@@ -109,10 +115,12 @@ services:
       - KEY_MAX_IN_FLIGHT=${ADAPTER_KEY_MAX_IN_FLIGHT:-1}
       - KEY_QUEUE_WAIT_SECONDS=${ADAPTER_KEY_QUEUE_WAIT_SECONDS:-30}
       - MAX_REQUEST_BODY_BYTES=${ADAPTER_MAX_REQUEST_BODY_BYTES:-8388608}
+      - ACCESS_LOG_HEALTH=${ADAPTER_ACCESS_LOG_HEALTH:-false}
       - NVIDIA_API_KEYS=${NVIDIA_API_KEYS:?NVIDIA_API_KEYS is required}
       - NVIDIA_ACCOUNT_POOL_FILE=${NVIDIA_ACCOUNT_POOL_FILE:-}
     networks:
       - sub2api-network
+    logging: *default-logging
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=5).read()"]
       interval: 30s
@@ -138,6 +146,7 @@ services:
       - TZ=${TZ:-Asia/Shanghai}
     networks:
       - sub2api-network
+    logging: *default-logging
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-sub2api} -d ${POSTGRES_DB:-sub2api}"]
       interval: 10s
@@ -163,6 +172,7 @@ services:
       - REDISCLI_AUTH=${REDIS_PASSWORD:-}
     networks:
       - sub2api-network
+    logging: *default-logging
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 10s

@@ -47,6 +47,7 @@ class EnvTests(unittest.TestCase):
             "KEY_MAX_IN_FLIGHT": "2",
             "KEY_QUEUE_WAIT_SECONDS": "7",
             "MAX_REQUEST_BODY_BYTES": "4096",
+            "ACCESS_LOG_HEALTH": "true",
             "NVIDIA_ACCOUNT_POOL": (
                 '[{"email":"alice@example.com",'
                 '"password":"secret","note":"nvidia-build"}]'
@@ -61,8 +62,18 @@ class EnvTests(unittest.TestCase):
         self.assertEqual(config.key_max_in_flight, 2)
         self.assertEqual(config.key_queue_wait_seconds, 7)
         self.assertEqual(config.max_request_body_bytes, 4096)
+        self.assertTrue(config.access_log_health)
         self.assertEqual(len(config.account_credentials), 1)
         self.assertEqual(config.account_credentials[0].email, "alice@example.com")
+
+    def test_access_log_health_defaults_to_false(self):
+        env = {
+            "NVIDIA_API_KEYS": "nvapi-a",
+            "ADMIN_TOKEN": "admin-token",
+        }
+        with patch.dict(os.environ, env, clear=True):
+            config = server.load_config()
+        self.assertFalse(config.access_log_health)
 
     def test_load_account_pool_from_file(self):
         with tempfile.TemporaryDirectory() as tmp:
