@@ -9,6 +9,20 @@ Base URL: https://Zteapi.com/v1
 Auth: Authorization: Bearer YOUR_SUB2API_KEY
 ```
 
+常用入口：
+
+```text
+注册页面: https://Zteapi.com/register
+用户登录: https://Zteapi.com/login
+用户控制台: https://Zteapi.com/dashboard
+用户 API Key: https://Zteapi.com/keys
+用户用量: https://Zteapi.com/usage
+管理后台: https://Zteapi.com/admin
+接入文档: https://Zteapi.com/docs/
+```
+
+普通用户注册或登录后进入 `/dashboard`、`/keys`、`/usage` 等用户页面；管理员后台在 `/admin`，非管理员访问后台会被路由守卫带回用户控制台。
+
 不要把真实 `sk-...` 写进仓库、截图、公开聊天或前端静态文档。下面所有密钥都用占位符。
 
 ## 1. 两类 API Key 的定位
