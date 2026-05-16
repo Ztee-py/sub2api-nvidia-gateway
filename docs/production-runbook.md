@@ -53,6 +53,27 @@ nvidia-openai -> NVIDIA adapter account/channel
 
 For each external user, create a Sub2API API key bound to exactly the group they should use. If an API key is bound to the NVIDIA group, GPT model calls should not be used with that key.
 
+## GPT OAuth Stability
+
+Keep GPT OAuth account scheduling conservative and let limited accounts rest before they are retried:
+
+```bash
+cd /opt/sub2api-nvidia/cloud-deploy
+GPT_ACCOUNT_CONCURRENCY=3 \
+RATE_LIMIT_429_COOLDOWN_SECONDS=300 \
+./scripts/tune-gpt-oauth-pool.sh
+```
+
+Recommended production defaults:
+
+```text
+GPT group: gpt
+Per-account concurrency: 3
+429 fallback cooldown: 300 seconds
+```
+
+The cooldown setting is used when Sub2API receives a 429 but cannot parse an upstream reset time. If an upstream reset time is available, Sub2API uses that value. See [GPT OAuth stability guide](gpt-oauth-stability.md) for inspection queries and tuning notes.
+
 ## Logs
 
 ```bash
@@ -92,13 +113,15 @@ for f in backups/sub2api-files-*.tar.gz; do tar tzf "$f" >/dev/null; done
 
 Backups contain secrets. Do not upload them to public storage. If copying to your PC, prefer an external disk with enough free space.
 
+The file backup includes runtime config and deployable project files: adapter source, scripts, public docs, root docs, `.env`, Caddy config/cert data when enabled, Redis data when enabled, and private account secrets. PostgreSQL is backed up separately through `pg_dump`; do not rely on copying the live `postgres_data` directory as the primary database backup.
+
 ## Restore Drill
 
 A restore is not considered reliable until tested on a new server or isolated test directory. Minimal restore flow:
 
 ```bash
 cd /opt/sub2api-nvidia/cloud-deploy
-tar xzf backups/sub2api-files-YYYYMMDD-HHMMSS.tar.gz
+tar xzf backups/sub2api-files-YYYYMMDD-HHMMSS.tar.gz -C /opt/sub2api-nvidia
 docker compose up -d postgres redis
 gunzip -c backups/sub2api-postgres-YYYYMMDD-HHMMSS.sql.gz \
   | docker compose exec -T postgres psql -U "${POSTGRES_USER:-sub2api}" "${POSTGRES_DB:-sub2api}"

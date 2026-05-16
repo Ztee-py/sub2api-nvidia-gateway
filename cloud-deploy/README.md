@@ -121,6 +121,16 @@ Proxy: leave empty first when the server is in a supported country/region
 
 After OAuth authorization succeeds, create a user API key bound to the GPT group. Do not reuse a key bound to the NVIDIA group when testing GPT.
 
+Apply the conservative production scheduling defaults after adding or restoring OAuth accounts:
+
+```bash
+GPT_ACCOUNT_CONCURRENCY=3 \
+RATE_LIMIT_429_COOLDOWN_SECONDS=300 \
+./scripts/tune-gpt-oauth-pool.sh
+```
+
+This keeps each GPT OAuth account at a low per-account concurrency and enables a 300-second fallback cooldown after 429 responses that do not include a parseable reset time.
+
 ## 7. Verify Real Calls And Usage Logs
 
 Run from the server:
@@ -172,15 +182,22 @@ backups/sub2api-files-YYYYMMDD-HHMMSS.tar.gz
 The files backup includes:
 
 ```text
-data/
-adapter_data/
-secrets/
-Caddyfile
-docker-compose.yml
-.env
-caddy_config/
-caddy_data/       when BACKUP_INCLUDE_CADDY_DATA=true
-redis_data/       when BACKUP_INCLUDE_REDIS_DATA=true
+README.md
+docs/
+server.py
+tests/
+cloud-deploy/data/
+cloud-deploy/adapter_data/
+cloud-deploy/secrets/
+cloud-deploy/public/
+cloud-deploy/scripts/
+cloud-deploy/adapter/
+cloud-deploy/Caddyfile
+cloud-deploy/docker-compose.yml
+cloud-deploy/.env
+cloud-deploy/caddy_config/
+cloud-deploy/caddy_data/       when BACKUP_INCLUDE_CADDY_DATA=true
+cloud-deploy/redis_data/       when BACKUP_INCLUDE_REDIS_DATA=true
 ```
 
 Backups are sensitive. They include credentials and TLS private keys. Store them privately.
@@ -189,10 +206,16 @@ Backups are sensitive. They include credentials and TLS private keys. Store them
 
 1. Install Docker on a fresh server.
 2. Copy the project files to `/opt/sub2api-nvidia`.
-3. Extract `sub2api-files-*.tar.gz` inside `/opt/sub2api-nvidia/cloud-deploy`.
-4. Start database and Redis:
+3. Extract `sub2api-files-*.tar.gz` into `/opt/sub2api-nvidia`.
 
    ```bash
+   tar xzf cloud-deploy/backups/sub2api-files-YYYYMMDD-HHMMSS.tar.gz -C /opt/sub2api-nvidia
+   ```
+
+4. Enter the deployment directory and start database and Redis:
+
+   ```bash
+   cd /opt/sub2api-nvidia/cloud-deploy
    docker compose up -d postgres redis
    ```
 
