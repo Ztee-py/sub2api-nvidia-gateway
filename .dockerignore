@@ -1,4 +1,9 @@
 .env
+*.env
+nvidia-accounts.json
+nvidia-accounts.jsonl
+nvidia-account-pool.*
+runtime-secrets/
 sub2api.db*
 server-debug*.log
 __pycache__/
@@ -8,4 +13,5 @@ cloud-deploy/postgres_data/
 cloud-deploy/redis_data/
 cloud-deploy/data/
 cloud-deploy/adapter_data/
+cloud-deploy/secrets/
 cloud-deploy/backups/

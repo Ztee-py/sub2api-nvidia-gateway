@@ -47,6 +47,10 @@ class EnvTests(unittest.TestCase):
             "KEY_MAX_IN_FLIGHT": "2",
             "KEY_QUEUE_WAIT_SECONDS": "7",
             "MAX_REQUEST_BODY_BYTES": "4096",
+            "NVIDIA_ACCOUNT_POOL": (
+                '[{"email":"alice@example.com",'
+                '"password":"secret","note":"nvidia-build"}]'
+            ),
         }
         with patch.dict(os.environ, env, clear=True):
             config = server.load_config()
@@ -57,6 +61,41 @@ class EnvTests(unittest.TestCase):
         self.assertEqual(config.key_max_in_flight, 2)
         self.assertEqual(config.key_queue_wait_seconds, 7)
         self.assertEqual(config.max_request_body_bytes, 4096)
+        self.assertEqual(len(config.account_credentials), 1)
+        self.assertEqual(config.account_credentials[0].email, "alice@example.com")
+
+    def test_load_account_pool_from_file(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "accounts.json")
+            with open(path, "w", encoding="utf-8") as handle:
+                handle.write(
+                    '{"accounts":[{"email":"alice@example.com","password":"pw1"},'
+                    '{"email":"bob@example.com","password":"pw2","enabled":false}]}'
+                )
+            env = {"NVIDIA_ACCOUNT_POOL_FILE": path}
+            with patch.dict(os.environ, env, clear=True):
+                accounts = server.load_account_pool()
+        self.assertEqual([account.email for account in accounts], ["alice@example.com", "bob@example.com"])
+        self.assertFalse(accounts[1].enabled)
+
+    def test_read_dotenv_values_preserves_process_env_override(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, ".env")
+            with open(path, "w", encoding="utf-8") as handle:
+                handle.write("NVIDIA_API_KEYS=from-file\n")
+            with patch.dict(os.environ, {"NVIDIA_API_KEYS": "from-process"}, clear=True):
+                server.load_dotenv(path)
+                values = server.read_dotenv_values(path)
+                self.assertEqual(os.environ["NVIDIA_API_KEYS"], "from-process")
+        self.assertEqual(values["NVIDIA_API_KEYS"], "from-file")
+
+    def test_parse_account_pool_lines_and_mask_snapshot(self):
+        accounts = server.parse_account_pool("alice@example.com|pw1|true|primary\nbob@example.com|pw2|false")
+        snapshot = server.account_pool_snapshot(accounts)
+        self.assertEqual(len(snapshot), 2)
+        self.assertEqual(snapshot[0]["email"], "al***e@example.com")
+        self.assertEqual(snapshot[0]["note"], "primary")
+        self.assertFalse(snapshot[1]["enabled"])
 
 
 class PoolTests(unittest.TestCase):
@@ -92,6 +131,11 @@ class PoolTests(unittest.TestCase):
         second = pool.pick()
         self.assertEqual(second.key, "k1")
         pool.mark_success(second)
+
+    def test_add_keys_deduplicates_existing_keys(self):
+        pool = server.ApiKeyPool(["k1"], cooldown_seconds=30)
+        self.assertEqual(pool.add_keys(["k1", "k2", " ", "k3"]), 2)
+        self.assertEqual(pool.keys, ["k1", "k2", "k3"])
 
 
 class UsageStoreTests(unittest.TestCase):

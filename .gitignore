@@ -1,9 +1,14 @@
 .env
 .env.*
 !.env.example
+nvidia-accounts.json
+nvidia-accounts.jsonl
+nvidia-account-pool.*
+runtime-secrets/
 cloud-deploy/.env
 cloud-deploy/.env.*
 !cloud-deploy/.env.example
+cloud-deploy/secrets/
 
 __pycache__/
 *.pyc

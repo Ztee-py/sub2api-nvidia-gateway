@@ -93,6 +93,21 @@ class RequestBodyTooLarge(ValueError):
 
 
 @dataclass
+class NvidiaAccountCredential:
+    index: int
+    email: str
+    password: str
+    enabled: bool = True
+    note: str = ""
+
+    def public_id(self) -> str:
+        return f"acct-{self.index + 1:02d}"
+
+    def masked_email(self) -> str:
+        return mask_email(self.email)
+
+
+@dataclass
 class AppConfig:
     bind_host: str
     port: int
@@ -106,6 +121,7 @@ class AppConfig:
     key_queue_wait_seconds: int
     max_request_body_bytes: int
     api_keys: List[str]
+    account_credentials: List[NvidiaAccountCredential]
 
 
 @dataclass
@@ -163,6 +179,11 @@ class ApiKeyPool:
     @property
     def size(self) -> int:
         return len(self._keys)
+
+    @property
+    def keys(self) -> List[str]:
+        with self._condition:
+            return [state.key for state in self._keys]
 
     def pick(self) -> ApiKeyState:
         deadline = time.time() + self._queue_wait_seconds
@@ -228,6 +249,23 @@ class ApiKeyPool:
                 }
                 for state in self._keys
             ]
+
+    def add_keys(self, keys: List[str]) -> int:
+        cleaned = [key.strip() for key in keys if key.strip()]
+        if not cleaned:
+            return 0
+        with self._condition:
+            existing = {state.key for state in self._keys}
+            added = 0
+            for key in cleaned:
+                if key in existing:
+                    continue
+                self._keys.append(ApiKeyState(index=len(self._keys), key=key))
+                existing.add(key)
+                added += 1
+            if added:
+                self._condition.notify_all()
+            return added
 
 
 class UsageStore:
@@ -506,10 +544,132 @@ def split_csv_env(value: str) -> List[str]:
     return [item.strip() for item in value.replace("\n", ",").split(",") if item.strip()]
 
 
-def load_dotenv(path: str = ".env") -> None:
+def mask_email(email: str) -> str:
+    if "@" not in email:
+        return "***"
+    local, domain = email.split("@", 1)
+    if len(local) <= 2:
+        masked_local = local[:1] + "***"
+    else:
+        masked_local = local[:2] + "***" + local[-1:]
+    return f"{masked_local}@{domain}"
+
+
+def parse_bool(value: Any, default: bool = True) -> bool:
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return value
+    normalized = str(value).strip().lower()
+    if normalized in {"1", "true", "yes", "y", "on", "enabled"}:
+        return True
+    if normalized in {"0", "false", "no", "n", "off", "disabled"}:
+        return False
+    raise ValueError(f"Invalid boolean value: {value}")
+
+
+def parse_account_line(line: str) -> Tuple[str, str, bool, str]:
+    parts = [part.strip() for part in line.split("|")]
+    if len(parts) < 2:
+        raise ValueError("Account entries must contain at least email and password separated by '|'.")
+    email = parts[0]
+    password = parts[1]
+    enabled = parse_bool(parts[2], default=True) if len(parts) >= 3 and parts[2] else True
+    note = parts[3] if len(parts) >= 4 else ""
+    return email, password, enabled, note
+
+
+def account_from_dict(index: int, item: Dict[str, Any]) -> NvidiaAccountCredential:
+    email = str(item.get("email", "")).strip()
+    password = str(item.get("password", "")).strip()
+    enabled = parse_bool(item.get("enabled"), default=True)
+    note = str(item.get("note", "")).strip()
+    return NvidiaAccountCredential(index=index, email=email, password=password, enabled=enabled, note=note)
+
+
+def validate_account(account: NvidiaAccountCredential) -> None:
+    if not account.email:
+        raise ConfigError(f"NVIDIA account {account.public_id()} email is empty.")
+    if "@" not in account.email:
+        raise ConfigError(f"NVIDIA account {account.public_id()} email is invalid.")
+    if not account.password:
+        raise ConfigError(f"NVIDIA account {account.public_id()} password is empty.")
+
+
+def parse_account_pool_json(raw: str) -> List[NvidiaAccountCredential]:
+    try:
+        payload = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        raise ConfigError(f"NVIDIA account pool JSON is invalid: {exc}") from exc
+    if isinstance(payload, dict):
+        payload = payload.get("accounts", [])
+    if not isinstance(payload, list):
+        raise ConfigError("NVIDIA account pool JSON must be a list or an object with an accounts list.")
+    accounts = []
+    for index, item in enumerate(payload):
+        if not isinstance(item, dict):
+            raise ConfigError(f"NVIDIA account item #{index + 1} must be an object.")
+        account = account_from_dict(index, item)
+        validate_account(account)
+        accounts.append(account)
+    return accounts
+
+
+def parse_account_pool_lines(raw: str) -> List[NvidiaAccountCredential]:
+    accounts = []
+    rows = []
+    for line in raw.replace(",", "\n").splitlines():
+        stripped = line.strip()
+        if stripped and not stripped.startswith("#"):
+            rows.append(stripped)
+    for index, row in enumerate(rows):
+        email, password, enabled, note = parse_account_line(row)
+        account = NvidiaAccountCredential(index=index, email=email, password=password, enabled=enabled, note=note)
+        validate_account(account)
+        accounts.append(account)
+    return accounts
+
+
+def parse_account_pool(raw: str) -> List[NvidiaAccountCredential]:
+    stripped = raw.lstrip("\ufeff").strip()
+    if not stripped:
+        return []
+    if stripped.startswith("[") or stripped.startswith("{"):
+        return parse_account_pool_json(stripped)
+    return parse_account_pool_lines(stripped)
+
+
+def load_account_pool(env: Optional[Dict[str, str]] = None) -> List[NvidiaAccountCredential]:
+    source = env if env is not None else os.environ
+    path = source.get("NVIDIA_ACCOUNT_POOL_FILE", "").strip()
+    raw = source.get("NVIDIA_ACCOUNT_POOL", "").strip()
+    if raw:
+        return parse_account_pool(raw)
+    if path:
+        if not os.path.exists(path):
+            raise ConfigError(f"NVIDIA_ACCOUNT_POOL_FILE does not exist: {path}")
+        with open(path, "r", encoding="utf-8-sig") as handle:
+            raw = handle.read()
+    return parse_account_pool(raw)
+
+
+def account_pool_snapshot(accounts: List[NvidiaAccountCredential]) -> List[Dict[str, Any]]:
+    return [
+        {
+            "id": account.public_id(),
+            "email": account.masked_email(),
+            "enabled": account.enabled,
+            "note": account.note,
+        }
+        for account in accounts
+    ]
+
+
+def read_dotenv_values(path: str = ".env") -> Dict[str, str]:
+    values: Dict[str, str] = {}
     if not os.path.exists(path):
-        return
-    with open(path, "r", encoding="utf-8") as handle:
+        return values
+    with open(path, "r", encoding="utf-8-sig") as handle:
         for raw_line in handle:
             line = raw_line.strip()
             if not line or line.startswith("#") or "=" not in line:
@@ -517,7 +677,13 @@ def load_dotenv(path: str = ".env") -> None:
             key, value = line.split("=", 1)
             key = key.strip()
             value = value.strip().strip('"').strip("'")
-            os.environ.setdefault(key, value)
+            values[key] = value
+    return values
+
+
+def load_dotenv(path: str = ".env") -> None:
+    for key, value in read_dotenv_values(path).items():
+        os.environ.setdefault(key, value)
 
 
 def get_required_env(name: str) -> str:
@@ -530,6 +696,7 @@ def get_required_env(name: str) -> str:
 def load_config() -> AppConfig:
     load_dotenv()
     api_keys = split_csv_env(get_required_env("NVIDIA_API_KEYS"))
+    account_credentials = load_account_pool()
     admin_token = os.environ.get("ADMIN_TOKEN", "").strip() or os.environ.get("SUB2API_ACCESS_TOKEN", "").strip()
     if not admin_token:
         raise ConfigError("ADMIN_TOKEN is required.")
@@ -547,6 +714,7 @@ def load_config() -> AppConfig:
         key_queue_wait_seconds=int(os.environ.get("KEY_QUEUE_WAIT_SECONDS", str(DEFAULT_KEY_QUEUE_WAIT_SECONDS))),
         max_request_body_bytes=int(os.environ.get("MAX_REQUEST_BODY_BYTES", str(DEFAULT_MAX_REQUEST_BODY_BYTES))),
         api_keys=api_keys,
+        account_credentials=account_credentials,
     )
 
 
@@ -1153,6 +1321,8 @@ class ProxyHandler(BaseHTTPRequestHandler):
                     "status": "ok",
                     "upstream_url": self.config.upstream_url,
                     "key_count": self.proxy.pool.size,
+                    "account_count": len(self.config.account_credentials),
+                    "enabled_account_count": sum(1 for account in self.config.account_credentials if account.enabled),
                     "key_max_in_flight": self.config.key_max_in_flight,
                     "key_queue_wait_seconds": self.config.key_queue_wait_seconds,
                     "max_request_body_bytes": self.config.max_request_body_bytes,
@@ -1199,6 +1369,12 @@ class ProxyHandler(BaseHTTPRequestHandler):
             response_json(self, HTTPStatus.OK, {"data": self.proxy.pool.snapshot()})
             return
 
+        if path == "/api/admin/accounts":
+            if not self.authorized_admin():
+                return
+            response_json(self, HTTPStatus.OK, {"data": account_pool_snapshot(self.config.account_credentials)})
+            return
+
         response_json(self, HTTPStatus.NOT_FOUND, error_payload("Not found.", "invalid_request_error", "not_found"))
 
     def do_POST(self) -> None:
@@ -1215,6 +1391,10 @@ class ProxyHandler(BaseHTTPRequestHandler):
 
         if path == "/api/admin/users":
             self.handle_create_user()
+            return
+
+        if path == "/api/admin/pool/reload":
+            self.handle_reload_pool()
             return
 
         response_json(self, HTTPStatus.NOT_FOUND, error_payload("Not found.", "invalid_request_error", "not_found"))
@@ -1376,6 +1556,33 @@ class ProxyHandler(BaseHTTPRequestHandler):
             return
         response_json(self, HTTPStatus.CREATED, {"user": user_to_public_dict(user), "token": token})
 
+    def handle_reload_pool(self) -> None:
+        if not self.authorized_admin():
+            return
+        try:
+            env = dict(os.environ)
+            env.update(read_dotenv_values())
+            keys = split_csv_env(env.get("NVIDIA_API_KEYS", ""))
+            if not keys:
+                raise ConfigError("NVIDIA_API_KEYS is required.")
+            accounts = load_account_pool(env)
+        except ConfigError as exc:
+            response_json(self, HTTPStatus.BAD_REQUEST, error_payload(str(exc), "invalid_request_error", "bad_request"))
+            return
+        added = self.proxy.pool.add_keys(keys)
+        self.config.api_keys = self.proxy.pool.keys
+        self.config.account_credentials = accounts
+        response_json(
+            self,
+            HTTPStatus.OK,
+            {
+                "added_key_count": added,
+                "key_count": self.proxy.pool.size,
+                "account_count": len(accounts),
+                "enabled_account_count": sum(1 for account in accounts if account.enabled),
+            },
+        )
+
     def handle_update_user(self, path: str) -> None:
         if not self.authorized_admin():
             return
@@ -1428,6 +1635,7 @@ class ProxyHandler(BaseHTTPRequestHandler):
             "summary": self.store.summary(),
             "users": self.store.list_users(),
             "pool": self.proxy.pool.snapshot(),
+            "accounts": account_pool_snapshot(self.config.account_credentials),
             "models": MODEL_LIST,
             "upstream_url": self.config.upstream_url,
         }
@@ -1445,6 +1653,7 @@ def render_dashboard(store: UsageStore, pool: ApiKeyPool, config: AppConfig) -> 
     summary = store.summary()
     users = store.list_users()
     pool_rows = pool.snapshot()
+    account_rows = account_pool_snapshot(config.account_credentials)
 
     user_rows = "\n".join(
         f"""
@@ -1484,6 +1693,17 @@ def render_dashboard(store: UsageStore, pool: ApiKeyPool, config: AppConfig) -> 
         </tr>
         """
         for row in pool_rows
+    )
+    account_table_rows = "\n".join(
+        f"""
+        <tr>
+          <td>{row['id']}</td>
+          <td>{html.escape(str(row['email']))}</td>
+          <td>{'enabled' if row['enabled'] else 'disabled'}</td>
+          <td>{html.escape(str(row['note']))}</td>
+        </tr>
+        """
+        for row in account_rows
     )
     recent_rows = "\n".join(
         f"""
@@ -1618,7 +1838,7 @@ def render_dashboard(store: UsageStore, pool: ApiKeyPool, config: AppConfig) -> 
       <h1>sub2api NVIDIA Dashboard</h1>
       <div class="subtle">OpenAI-compatible endpoint: <code>http://{html.escape(config.bind_host)}:{config.port}/v1</code></div>
     </div>
-    <div class="subtle">Upstream: {html.escape(config.upstream_url)} · Keys: {pool.size}</div>
+    <div class="subtle">Upstream: {html.escape(config.upstream_url)} · Keys: {pool.size} · Accounts: {len(account_rows)}</div>
   </header>
   <main>
     <div class="grid">
@@ -1631,6 +1851,7 @@ def render_dashboard(store: UsageStore, pool: ApiKeyPool, config: AppConfig) -> 
       <div class="metric"><span class="subtle">Prompt Token</span><strong>{format_number(summary['prompt_tokens'])}</strong></div>
       <div class="metric"><span class="subtle">Completion Token</span><strong>{format_number(summary['completion_tokens'])}</strong></div>
       <div class="metric"><span class="subtle">失败请求</span><strong>{format_number(summary['error_count'])}</strong></div>
+      <div class="metric"><span class="subtle">NVIDIA Accounts</span><strong>{format_number(len(account_rows))}</strong></div>
     </div>
 
     <section>
@@ -1666,6 +1887,14 @@ def render_dashboard(store: UsageStore, pool: ApiKeyPool, config: AppConfig) -> 
       <table>
         <thead><tr><th>Key</th><th>成功</th><th>失败</th><th>In Flight</th><th>冷却</th><th>最近错误</th></tr></thead>
         <tbody>{pool_table_rows}</tbody>
+      </table>
+    </section>
+
+    <section>
+      <h2>NVIDIA Account Pool</h2>
+      <table>
+        <thead><tr><th>ID</th><th>Email</th><th>Status</th><th>Note</th></tr></thead>
+        <tbody>{account_table_rows or '<tr><td colspan="4">No accounts configured</td></tr>'}</tbody>
       </table>
     </section>
 
@@ -1778,6 +2007,8 @@ def main() -> None:
                     "database_path": config.database_path,
                     "upstream_url": config.upstream_url,
                     "key_count": len(config.api_keys),
+                    "account_count": len(config.account_credentials),
+                    "enabled_account_count": sum(1 for account in config.account_credentials if account.enabled),
                     "key_max_in_flight": config.key_max_in_flight,
                     "key_queue_wait_seconds": config.key_queue_wait_seconds,
                     "max_request_body_bytes": config.max_request_body_bytes,

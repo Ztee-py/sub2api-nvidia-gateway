@@ -1,0 +1,10 @@
+{
+  "accounts": [
+    {
+      "email": "user-one@example.com",
+      "password": "replace-with-password",
+      "enabled": true,
+      "note": "NVIDIA Build account"
+    }
+  ]
+}

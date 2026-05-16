@@ -68,6 +68,14 @@ ADMIN_PASSWORD=your-strong-password
 
 `make-prod-env.ps1` copies your existing `NVIDIA_API_KEYS` from the root `.env`.
 
+If you also keep NVIDIA login credentials in the adapter account pool, set this in the root `.env` before running the script:
+
+```text
+NVIDIA_ACCOUNT_POOL_FILE=nvidia-accounts.json
+```
+
+The script copies that ignored local file to `cloud-deploy/secrets/nvidia-accounts.json` and sets `NVIDIA_ACCOUNT_POOL_FILE=/app/secrets/nvidia-accounts.json` for the adapter.
+
 ## 4. Upload
 
 Upload the whole project directory to the cloud server, for example:

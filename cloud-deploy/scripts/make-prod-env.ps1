@@ -25,6 +25,20 @@ $nvidiaKeys = Read-EnvValue $rootEnv "NVIDIA_API_KEYS"
 if (!$nvidiaKeys) {
   throw "NVIDIA_API_KEYS is empty in root .env"
 }
+$accountPoolFile = Read-EnvValue $rootEnv "NVIDIA_ACCOUNT_POOL_FILE"
+$deployAccountPoolFile = ""
+if ($accountPoolFile) {
+  $sourceAccountPool = $accountPoolFile
+  if (![System.IO.Path]::IsPathRooted($sourceAccountPool)) {
+    $sourceAccountPool = Join-Path $root $sourceAccountPool
+  }
+  if (Test-Path $sourceAccountPool) {
+    $secretDir = Join-Path $deploy "secrets"
+    New-Item -ItemType Directory -Force -Path $secretDir | Out-Null
+    Copy-Item -LiteralPath $sourceAccountPool -Destination (Join-Path $secretDir "nvidia-accounts.json") -Force
+    $deployAccountPoolFile = "/app/secrets/nvidia-accounts.json"
+  }
+}
 
 $content = @"
 # Edit PUBLIC_DOMAIN / ACME_EMAIL / ADMIN_EMAIL / ADMIN_PASSWORD before upload.
@@ -57,6 +71,7 @@ ADAPTER_KEY_MAX_IN_FLIGHT=1
 ADAPTER_KEY_QUEUE_WAIT_SECONDS=30
 ADAPTER_MAX_REQUEST_BODY_BYTES=8388608
 NVIDIA_API_KEYS=$nvidiaKeys
+NVIDIA_ACCOUNT_POOL_FILE=$deployAccountPoolFile
 
 RUN_MODE=standard
 SERVER_MODE=release

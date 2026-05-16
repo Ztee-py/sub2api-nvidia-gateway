@@ -93,6 +93,7 @@ services:
     restart: unless-stopped
     volumes:
       - ./adapter_data:/app/data
+      - ./secrets:/app/secrets:ro
     environment:
       - ADMIN_TOKEN=${ADAPTER_ADMIN_TOKEN:?ADAPTER_ADMIN_TOKEN is required}
       - SUB2API_ACCESS_TOKEN=${ADAPTER_CLIENT_TOKEN:?ADAPTER_CLIENT_TOKEN is required}
@@ -109,6 +110,7 @@ services:
       - KEY_QUEUE_WAIT_SECONDS=${ADAPTER_KEY_QUEUE_WAIT_SECONDS:-30}
       - MAX_REQUEST_BODY_BYTES=${ADAPTER_MAX_REQUEST_BODY_BYTES:-8388608}
       - NVIDIA_API_KEYS=${NVIDIA_API_KEYS:?NVIDIA_API_KEYS is required}
+      - NVIDIA_ACCOUNT_POOL_FILE=${NVIDIA_ACCOUNT_POOL_FILE:-}
     networks:
       - sub2api-network
     healthcheck:
