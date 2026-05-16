@@ -138,6 +138,22 @@ Expected result:
 - GPT response contains `GPT_VERIFY_OK`.
 - The script prints new rows from `usage_logs`, including `input_tokens`, `output_tokens`, `total_tokens` and `total_cost`.
 
+## 7.1 Public Access Documentation
+
+This deployment serves a lightweight public access guide at:
+
+```text
+https://YOUR_DOMAIN/docs/
+```
+
+The page is static and mounted from:
+
+```text
+cloud-deploy/public/docs/
+```
+
+It documents the public OpenAI-compatible Base URL, API key usage, Codex configuration and simple SDK examples. Keep real user API keys out of this directory and out of Git.
+
 ## 8. Backup
 
 Create a full server-side backup:

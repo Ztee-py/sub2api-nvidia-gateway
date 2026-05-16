@@ -1,0 +1,525 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>ZteAPI 接入文档</title>
+  <style>
+    :root {
+      --bg: #f6f7f9;
+      --panel: #ffffff;
+      --ink: #18212f;
+      --muted: #667085;
+      --line: #d9e0ea;
+      --brand: #1463ff;
+      --brand-dark: #0a3fa8;
+      --code: #101828;
+      --code-text: #f7fbff;
+      --ok: #11845b;
+      --warn: #a15c08;
+    }
+    * { box-sizing: border-box; }
+    html { scroll-behavior: smooth; }
+    body {
+      margin: 0;
+      color: var(--ink);
+      background: var(--bg);
+      font-family: "Microsoft YaHei", "PingFang SC", "Noto Sans SC", Arial, sans-serif;
+      line-height: 1.7;
+    }
+    a { color: var(--brand-dark); text-decoration: none; }
+    a:hover { text-decoration: underline; }
+    .layout {
+      display: grid;
+      grid-template-columns: 268px minmax(0, 1fr);
+      gap: 28px;
+      max-width: 1240px;
+      margin: 0 auto;
+      padding: 24px 20px 56px;
+    }
+    aside {
+      position: sticky;
+      top: 18px;
+      height: calc(100vh - 36px);
+      overflow: auto;
+      border: 1px solid var(--line);
+      background: rgba(255, 255, 255, .94);
+      padding: 20px;
+    }
+    .brand {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      padding-bottom: 18px;
+      border-bottom: 1px solid var(--line);
+      margin-bottom: 14px;
+    }
+    .logo {
+      width: 42px;
+      height: 42px;
+      display: grid;
+      place-items: center;
+      color: #fff;
+      background: linear-gradient(135deg, #1463ff, #15a78f);
+      font-weight: 800;
+      border-radius: 8px;
+    }
+    .brand strong { display: block; font-size: 17px; }
+    .brand span { display: block; color: var(--muted); font-size: 12px; }
+    nav a {
+      display: block;
+      padding: 8px 10px;
+      color: #263447;
+      border-radius: 6px;
+      font-size: 14px;
+    }
+    nav a:hover { background: #edf3ff; text-decoration: none; }
+    main { min-width: 0; }
+    .hero {
+      padding: 42px;
+      border: 1px solid var(--line);
+      background: linear-gradient(135deg, #ffffff 0%, #f0f6ff 58%, #ecfffb 100%);
+      min-height: 300px;
+      display: grid;
+      align-content: center;
+    }
+    h1 {
+      margin: 8px 0 12px;
+      font-size: 46px;
+      line-height: 1.12;
+      letter-spacing: 0;
+    }
+    h2 { margin: 0 0 14px; font-size: 26px; letter-spacing: 0; }
+    h3 { margin: 22px 0 8px; font-size: 18px; letter-spacing: 0; }
+    p { margin: 8px 0 14px; }
+    .muted { color: var(--muted); }
+    .eyebrow {
+      color: var(--brand-dark);
+      font-weight: 800;
+      font-size: 13px;
+      text-transform: uppercase;
+      letter-spacing: .08em;
+    }
+    .quick-grid, .split, .error-grid {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 12px;
+      margin-top: 18px;
+    }
+    .split { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    .info, section {
+      border: 1px solid var(--line);
+      background: var(--panel);
+    }
+    .info { padding: 16px; }
+    .info strong { display: block; margin-bottom: 4px; }
+    section {
+      margin-top: 20px;
+      padding: 28px;
+    }
+    .callout {
+      border-left: 4px solid var(--brand);
+      background: #eef5ff;
+      padding: 12px 14px;
+      margin: 14px 0;
+      color: #1f3658;
+    }
+    .warn {
+      border-left-color: var(--warn);
+      background: #fff6e8;
+      color: #5c3806;
+    }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      margin: 12px 0 18px;
+      background: #fff;
+      border: 1px solid var(--line);
+    }
+    th, td {
+      padding: 11px 12px;
+      border-bottom: 1px solid var(--line);
+      text-align: left;
+      vertical-align: top;
+    }
+    th { background: #f0f4f9; }
+    tr:last-child td { border-bottom: 0; }
+    code, pre, kbd {
+      font-family: "Cascadia Code", Consolas, "Courier New", monospace;
+      font-size: .94em;
+    }
+    code {
+      background: #eef2f7;
+      color: #11223a;
+      padding: 1px 5px;
+      border-radius: 4px;
+    }
+    .codebox {
+      margin: 12px 0 20px;
+      background: var(--code);
+      overflow: hidden;
+    }
+    .code-title {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 12px;
+      padding: 9px 12px;
+      background: #1d2939;
+      color: #d6e4ff;
+      font-size: 13px;
+    }
+    button.copy {
+      border: 1px solid #8fb3ff;
+      background: #eef5ff;
+      color: #12315f;
+      padding: 5px 9px;
+      cursor: pointer;
+      border-radius: 6px;
+      font-weight: 700;
+    }
+    pre {
+      margin: 0;
+      padding: 16px;
+      overflow: auto;
+      color: var(--code-text);
+      line-height: 1.6;
+      font-size: 13px;
+    }
+    pre code {
+      color: inherit;
+      background: transparent;
+      padding: 0;
+      border-radius: 0;
+    }
+    .models {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      margin: 10px 0;
+    }
+    .models span {
+      border: 1px solid var(--line);
+      background: #f7f9fc;
+      padding: 5px 8px;
+      border-radius: 6px;
+      font-family: "Cascadia Code", Consolas, monospace;
+      font-size: 13px;
+    }
+    .generator {
+      display: grid;
+      grid-template-columns: minmax(0, 380px) minmax(0, 1fr);
+      gap: 16px;
+    }
+    label { display: block; font-weight: 800; margin: 10px 0 5px; }
+    input, select {
+      width: 100%;
+      border: 1px solid var(--line);
+      background: #fff;
+      color: var(--ink);
+      padding: 10px 11px;
+      border-radius: 6px;
+      font: inherit;
+    }
+    .actions { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 12px; }
+    .actions button {
+      border: 1px solid var(--brand);
+      background: var(--brand);
+      color: #fff;
+      padding: 9px 12px;
+      border-radius: 6px;
+      cursor: pointer;
+      font-weight: 800;
+    }
+    .actions button.secondary { background: #fff; color: var(--brand-dark); }
+    footer { color: var(--muted); text-align: center; padding: 24px; font-size: 13px; }
+    @media (max-width: 900px) {
+      .layout { grid-template-columns: 1fr; padding: 12px; }
+      aside { position: static; height: auto; }
+      .hero { padding: 28px 20px; }
+      h1 { font-size: 34px; }
+      .quick-grid, .split, .error-grid, .generator { grid-template-columns: 1fr; }
+      section { padding: 20px; }
+    }
+  </style>
+</head>
+<body>
+  <div class="layout">
+    <aside>
+      <div class="brand">
+        <div class="logo">Z</div>
+        <div>
+          <strong>ZteAPI 文档</strong>
+          <span>Sub2API Gateway</span>
+        </div>
+      </div>
+      <nav>
+        <a href="#quick">快速开始</a>
+        <a href="#codex">Codex 配置</a>
+        <a href="#generator">配置生成器</a>
+        <a href="#http">HTTP 调用</a>
+        <a href="#sdk">SDK 示例</a>
+        <a href="#models">模型</a>
+        <a href="#usage">用量与扣费</a>
+        <a href="#errors">常见错误</a>
+      </nav>
+    </aside>
+
+    <main>
+      <header class="hero">
+        <div class="eyebrow">OpenAI-compatible API</div>
+        <h1>ZteAPI 接入文档</h1>
+        <p class="muted">把客户端的 Base URL 改成 <code>https://Zteapi.com/v1</code>，填入你在 Sub2API 创建的 API Key，即可调用 GPT OAuth 或 NVIDIA adapter 模型。</p>
+        <div class="quick-grid">
+          <div class="info"><strong>Base URL</strong><p><code>https://Zteapi.com/v1</code></p></div>
+          <div class="info"><strong>认证方式</strong><p><code>Authorization: Bearer YOUR_KEY</code></p></div>
+          <div class="info"><strong>推荐 Codex 模型</strong><p><code>gpt-5.4</code></p></div>
+        </div>
+      </header>
+
+      <section id="quick">
+        <h2>快速开始</h2>
+        <table>
+          <thead><tr><th>场景</th><th>填写内容</th></tr></thead>
+          <tbody>
+            <tr><td>GPT / OpenAI OAuth</td><td>API Key 使用绑定 GPT 组的 <code>sk-...</code>；模型先用 <code>gpt-5.4</code>。</td></tr>
+            <tr><td>NVIDIA adapter</td><td>API Key 使用绑定 NVIDIA 组的 <code>sk-sub2api-nvidia-...</code>；模型先用 <code>qwen3-next-80b</code>。</td></tr>
+            <tr><td>协议</td><td>优先使用 <code>/v1/responses</code>；老客户端可用 <code>/v1/chat/completions</code>。</td></tr>
+          </tbody>
+        </table>
+        <div class="warn callout">不要把真实 API Key 写进公开代码、截图、网页或聊天记录。本文档只展示占位符。</div>
+      </section>
+
+      <section id="codex">
+        <h2>Codex Desktop / Codex CLI</h2>
+        <p>Codex 配置文件通常在 <code>%USERPROFILE%\.codex\config.toml</code> 或 <code>~/.codex/config.toml</code>。推荐定义两个 provider，再用 profile 切换。</p>
+        <h3>1. 设置环境变量</h3>
+        <div class="codebox">
+          <div class="code-title"><span>Windows PowerShell</span><button class="copy">复制</button></div>
+          <pre><code>[Environment]::SetEnvironmentVariable("ZTEAPI_GPT_KEY", "sk-your-gpt-sub2api-key", "User")
+[Environment]::SetEnvironmentVariable("ZTEAPI_NVIDIA_KEY", "sk-your-nvidia-sub2api-key", "User")</code></pre>
+        </div>
+        <h3>2. 写入 config.toml</h3>
+        <div class="codebox">
+          <div class="code-title"><span>config.toml</span><button class="copy">复制</button></div>
+          <pre><code>model = "gpt-5.4"
+model_provider = "zteapi_gpt"
+model_reasoning_effort = "medium"
+disable_response_storage = true
+
+[model_providers.zteapi_gpt]
+name = "ZteAPI GPT OAuth"
+base_url = "https://Zteapi.com/v1"
+wire_api = "responses"
+env_key = "ZTEAPI_GPT_KEY"
+env_key_instructions = "Set ZTEAPI_GPT_KEY to your Sub2API GPT user key."
+
+[model_providers.zteapi_nvidia]
+name = "ZteAPI NVIDIA"
+base_url = "https://Zteapi.com/v1"
+wire_api = "responses"
+env_key = "ZTEAPI_NVIDIA_KEY"
+env_key_instructions = "Set ZTEAPI_NVIDIA_KEY to your Sub2API NVIDIA user key."
+stream_idle_timeout_ms = 600000
+
+[profiles.zteapi-gpt]
+model = "gpt-5.4"
+model_provider = "zteapi_gpt"
+model_reasoning_effort = "medium"
+
+[profiles.zteapi-nvidia]
+model = "qwen3-next-80b"
+model_provider = "zteapi_nvidia"
+model_reasoning_effort = "medium"</code></pre>
+        </div>
+        <h3>3. 启动指定 profile</h3>
+        <div class="codebox">
+          <div class="code-title"><span>CLI</span><button class="copy">复制</button></div>
+          <pre><code>codex -p zteapi-gpt
+codex -p zteapi-nvidia</code></pre>
+        </div>
+        <div class="callout">实际做代码 agent 工作时优先用 GPT profile。NVIDIA profile 更适合普通文本、模型备用或轻量测试。</div>
+      </section>
+
+      <section id="generator">
+        <h2>配置生成器</h2>
+        <p>选择 key 类型后生成最小 Codex provider 片段。密钥只在你的浏览器里处理，不会上传。</p>
+        <div class="generator">
+          <div>
+            <label for="kind">Key 类型</label>
+            <select id="kind">
+              <option value="gpt">GPT OAuth</option>
+              <option value="nvidia">NVIDIA</option>
+            </select>
+            <label for="api-key">API Key</label>
+            <input id="api-key" placeholder="sk-...">
+            <label for="model">模型</label>
+            <input id="model" value="gpt-5.4">
+            <div class="actions">
+              <button id="generate" type="button">生成</button>
+              <button id="copy-generated" type="button" class="secondary">复制结果</button>
+            </div>
+          </div>
+          <div class="codebox">
+            <div class="code-title"><span>生成结果</span><button class="copy">复制</button></div>
+            <pre><code id="output">点击“生成”。</code></pre>
+          </div>
+        </div>
+      </section>
+
+      <section id="http">
+        <h2>HTTP 调用</h2>
+        <h3>查看模型</h3>
+        <div class="codebox">
+          <div class="code-title"><span>curl</span><button class="copy">复制</button></div>
+          <pre><code>curl https://Zteapi.com/v1/models \
+  -H "Authorization: Bearer YOUR_SUB2API_KEY"</code></pre>
+        </div>
+        <h3>Responses API</h3>
+        <div class="codebox">
+          <div class="code-title"><span>GPT</span><button class="copy">复制</button></div>
+          <pre><code>curl https://Zteapi.com/v1/responses \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer YOUR_GPT_SUB2API_KEY" \
+  -d '{
+    "model": "gpt-5.4",
+    "input": "只回复 OK",
+    "store": false,
+    "max_output_tokens": 16
+  }'</code></pre>
+        </div>
+        <div class="codebox">
+          <div class="code-title"><span>NVIDIA</span><button class="copy">复制</button></div>
+          <pre><code>curl https://Zteapi.com/v1/responses \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer YOUR_NVIDIA_SUB2API_KEY" \
+  -d '{
+    "model": "qwen3-next-80b",
+    "input": "Reply exactly: OK",
+    "max_output_tokens": 16
+  }'</code></pre>
+        </div>
+      </section>
+
+      <section id="sdk">
+        <h2>Python / Node SDK</h2>
+        <div class="split">
+          <div class="codebox">
+            <div class="code-title"><span>Python</span><button class="copy">复制</button></div>
+            <pre><code>import os
+from openai import OpenAI
+
+client = OpenAI(
+    api_key=os.environ["ZTEAPI_GPT_KEY"],
+    base_url="https://Zteapi.com/v1",
+)
+
+response = client.responses.create(
+    model="gpt-5.4",
+    input="只回复 OK",
+    store=False,
+)
+
+print(response.output_text)</code></pre>
+          </div>
+          <div class="codebox">
+            <div class="code-title"><span>Node.js</span><button class="copy">复制</button></div>
+            <pre><code>import OpenAI from "openai";
+
+const client = new OpenAI({
+  apiKey: process.env.ZTEAPI_GPT_KEY,
+  baseURL: "https://Zteapi.com/v1",
+});
+
+const response = await client.responses.create({
+  model: "gpt-5.4",
+  input: "只回复 OK",
+  store: false,
+});
+
+console.log(response.output_text);</code></pre>
+          </div>
+        </div>
+      </section>
+
+      <section id="models">
+        <h2>模型</h2>
+        <p>GPT OAuth 模型以后台可用模型为准。NVIDIA adapter 当前开放：</p>
+        <div class="models">
+          <span>qwen3-next-80b</span>
+          <span>qwen3-coder-480b</span>
+          <span>llama-3.3-70b</span>
+          <span>nemotron-super-49b</span>
+          <span>kimi-k2.6</span>
+          <span>glm-5.1</span>
+          <span>deepseekv4-pro</span>
+        </div>
+      </section>
+
+      <section id="usage">
+        <h2>用量与扣费</h2>
+        <p>真实生成请求完成后，Sub2API 会记录 token 消耗。普通用户看自己的 Usage / 用量页面；管理员看 Admin / Usage Logs 或仪表盘聚合数据。</p>
+        <div class="callout">调用 <code>/v1/models</code> 通常不会产生模型 token 消耗。要验证仪表盘变化，请调用 <code>/v1/responses</code> 或 <code>/v1/chat/completions</code>。</div>
+        <div class="warn callout">如果 NVIDIA 模型能看到 <code>input_tokens</code> 和 <code>output_tokens</code>，但 <code>total_cost</code> 是 0，说明该模型在 Sub2API 定价表里还没配置价格或倍率；这不影响调用，但会影响成本统计。</div>
+      </section>
+
+      <section id="errors">
+        <h2>常见错误</h2>
+        <div class="error-grid">
+          <div class="info"><strong>401 / invalid key</strong><p>key 复制错误、已删除或不属于当前站点。</p></div>
+          <div class="info"><strong>403 unsupported country</strong><p>OAuth 授权出口地区不被 OpenAI 支持。</p></div>
+          <div class="info"><strong>503 unavailable</strong><p>该组没有可用账号，或模型没有开放。</p></div>
+          <div class="info"><strong>model not found</strong><p>模型名写错，先用 <code>/v1/models</code> 查看。</p></div>
+          <div class="info"><strong>Unsupported parameter</strong><p>移除报错中的参数，例如部分模型不支持温度。</p></div>
+          <div class="info"><strong>Codex 仍走旧配置</strong><p>重启终端或 Codex Desktop，确认 profile。</p></div>
+        </div>
+      </section>
+
+      <footer>最后更新：2026-05-16。本文档不会保存或上传你的 API Key。</footer>
+    </main>
+  </div>
+  <script>
+    function copyText(text, button) {
+      navigator.clipboard.writeText(text).then(function () {
+        var old = button.textContent;
+        button.textContent = "已复制";
+        setTimeout(function () { button.textContent = old; }, 1200);
+      }).catch(function () {
+        button.textContent = "手动复制";
+      });
+    }
+    document.querySelectorAll(".codebox").forEach(function (box) {
+      var button = box.querySelector("button.copy");
+      var code = box.querySelector("code");
+      if (!button || !code) return;
+      button.addEventListener("click", function () {
+        copyText(code.innerText, button);
+      });
+    });
+    var kind = document.getElementById("kind");
+    var model = document.getElementById("model");
+    kind.addEventListener("change", function () {
+      model.value = kind.value === "gpt" ? "gpt-5.4" : "qwen3-next-80b";
+    });
+    document.getElementById("generate").addEventListener("click", function () {
+      var selected = kind.value;
+      var key = document.getElementById("api-key").value.trim() || "sk-your-sub2api-key";
+      var modelValue = model.value.trim() || (selected === "gpt" ? "gpt-5.4" : "qwen3-next-80b");
+      var provider = selected === "gpt" ? "zteapi_gpt" : "zteapi_nvidia";
+      var name = selected === "gpt" ? "ZteAPI GPT OAuth" : "ZteAPI NVIDIA";
+      var output = 'model = "' + modelValue + '"\n' +
+        'model_provider = "' + provider + '"\n' +
+        'disable_response_storage = true\n\n' +
+        '[model_providers.' + provider + ']\n' +
+        'name = "' + name + '"\n' +
+        'base_url = "https://Zteapi.com/v1"\n' +
+        'wire_api = "responses"\n' +
+        'experimental_bearer_token = "' + key + '"\n';
+      document.getElementById("output").textContent = output;
+    });
+    document.getElementById("copy-generated").addEventListener("click", function () {
+      copyText(document.getElementById("output").innerText, this);
+    });
+  </script>
+</body>
+</html>

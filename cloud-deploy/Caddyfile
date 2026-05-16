@@ -21,5 +21,12 @@
 		max_size 8MB
 	}
 
-	reverse_proxy sub2api:8080
+	handle_path /docs* {
+		root * /srv/docs
+		file_server
+	}
+
+	handle {
+		reverse_proxy sub2api:8080
+	}
 }

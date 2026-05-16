@@ -89,6 +89,7 @@ NVIDIA_API_KEYS=nvapi-xxx,nvapi-yyy
 ## Documentation
 
 - [Cloud deployment guide](cloud-deploy/README.md)
+- [User API and Codex access guide](docs/codex-access.md)
 - [NVIDIA channel setup](cloud-deploy/SUB2API_NVIDIA_CHANNEL.md)
 - [NVIDIA account pool](docs/account-pool.md)
 - [Production operations runbook](docs/production-runbook.md)
