@@ -44,6 +44,7 @@ cloud_paths=(
   cloud-deploy/public
   cloud-deploy/scripts
   cloud-deploy/adapter
+  cloud-deploy/html-injector
   cloud-deploy/Caddyfile
   cloud-deploy/docker-compose.yml
   cloud-deploy/.env

@@ -26,7 +26,22 @@
 		file_server
 	}
 
-	handle {
+	handle /zteapi-floating-doc.css {
+		root * /srv/inject
+		file_server
+	}
+
+	handle /zteapi-floating-doc.js {
+		root * /srv/inject
+		file_server
+	}
+
+	@sub2api_direct path /api/* /v1/* /health /assets/* /logo.png /favicon.ico /manifest* /robots.txt /sw.js
+	handle @sub2api_direct {
 		reverse_proxy sub2api:8080
+	}
+
+	handle {
+		reverse_proxy html-injector:8090
 	}
 }

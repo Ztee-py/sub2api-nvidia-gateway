@@ -164,6 +164,28 @@ cloud-deploy/public/docs/
 
 It documents the public OpenAI-compatible Base URL, API key usage, Codex configuration and simple SDK examples. Keep real user API keys out of this directory and out of Git.
 
+## 7.2 Floating User Documentation Button
+
+The user-facing app pages include a bottom-right `API 接入文档` shortcut that opens the public access guide. It is injected by a lightweight `html-injector` service so the upstream Sub2API image does not need to be rebuilt.
+
+Static assets:
+
+```text
+cloud-deploy/public/inject/zteapi-floating-doc.css
+cloud-deploy/public/inject/zteapi-floating-doc.js
+```
+
+The button is shown on normal user pages such as `/dashboard`, `/keys`, `/usage`, `/profile` and `/subscriptions`. It is hidden on admin, login, registration, setup, legal and OAuth callback pages.
+
+The injector has an internal health endpoint so Caddy only depends on it after it is ready:
+
+```bash
+docker compose exec -T html-injector python - <<'PY'
+import urllib.request
+print(urllib.request.urlopen("http://127.0.0.1:8090/__html_injector_health", timeout=5).read().decode().strip())
+PY
+```
+
 ## 8. Backup
 
 Create a full server-side backup:
@@ -192,6 +214,7 @@ cloud-deploy/secrets/
 cloud-deploy/public/
 cloud-deploy/scripts/
 cloud-deploy/adapter/
+cloud-deploy/html-injector/
 cloud-deploy/Caddyfile
 cloud-deploy/docker-compose.yml
 cloud-deploy/.env

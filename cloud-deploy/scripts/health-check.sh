@@ -16,6 +16,13 @@ echo "== Local Sub2API health =="
 docker compose exec -T sub2api wget -q -O - http://127.0.0.1:8080/health || true
 
 echo
+echo "== HTML injector health =="
+docker compose exec -T html-injector python - <<'PY'
+import urllib.request
+print(urllib.request.urlopen("http://127.0.0.1:8090/__html_injector_health", timeout=5).read().decode().strip())
+PY
+
+echo
 echo "== NVIDIA adapter health =="
 docker compose exec -T nvidia-adapter python - <<'PY'
 import json

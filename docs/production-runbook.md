@@ -15,6 +15,7 @@ docker compose ps
 Confirm:
 
 - `sub2api` is healthy.
+- `html-injector` is healthy.
 - `nvidia-adapter` is healthy.
 - `postgres` and `redis` are healthy.
 - `https://Zteapi.com` returns HTTP 200.
@@ -74,10 +75,33 @@ Per-account concurrency: 3
 
 The cooldown setting is used when Sub2API receives a 429 but cannot parse an upstream reset time. If an upstream reset time is available, Sub2API uses that value. See [GPT OAuth stability guide](gpt-oauth-stability.md) for inspection queries and tuning notes.
 
+## User Documentation Button
+
+The public user app has a bottom-right `API 接入文档` button on user pages. It is injected by the `html-injector` service and opens:
+
+```text
+https://Zteapi.com/docs/
+```
+
+Operational checks:
+
+```bash
+docker compose ps html-injector caddy sub2api
+docker compose exec -T html-injector python - <<'PY'
+import urllib.request
+print(urllib.request.urlopen("http://127.0.0.1:8090/__html_injector_health", timeout=5).read().decode().strip())
+PY
+curl -fsS https://Zteapi.com/zteapi-floating-doc.js >/dev/null
+curl -fsS https://Zteapi.com/dashboard | grep -F zteapi-floating-doc.js
+```
+
+If the button must be rolled back quickly, route normal HTML pages in `Caddyfile` back to `sub2api:8080`, then run `docker compose up -d caddy`.
+
 ## Logs
 
 ```bash
 docker compose logs --tail=200 sub2api
+docker compose logs --tail=200 html-injector
 docker compose logs --tail=200 nvidia-adapter
 docker compose logs --tail=200 caddy
 ```
@@ -153,6 +177,15 @@ docker compose up -d
 
 5. Run health check and endpoint verification.
 6. Watch logs for 5 minutes.
+
+## Gateway Hardening Principles
+
+See [Gateway hardening notes](gateway-hardening-notes.md) for the source review behind the current production choices. Keep these principles in place:
+
+- Respect upstream 429 and reset signals instead of retrying aggressively.
+- Prefer observable cooldown, quota and usage records over hidden bypass behavior.
+- Keep user-facing documentation close to the product so users do not guess Base URL, model names or key placement.
+- Add health checks for every edge service before depending on it from Caddy.
 
 ## Common Incidents
 
