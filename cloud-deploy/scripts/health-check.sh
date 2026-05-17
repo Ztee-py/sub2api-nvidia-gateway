@@ -23,6 +23,13 @@ print(urllib.request.urlopen("http://127.0.0.1:8090/__html_injector_health", tim
 PY
 
 echo
+echo "== QR Pay bridge health =="
+docker compose exec -T qrpay-bridge python - <<'PY'
+import urllib.request
+print(urllib.request.urlopen("http://127.0.0.1:8095/health", timeout=5).read().decode().strip())
+PY
+
+echo
 echo "== NVIDIA adapter health =="
 docker compose exec -T nvidia-adapter python - <<'PY'
 import json

@@ -45,6 +45,7 @@ cloud_paths=(
   cloud-deploy/scripts
   cloud-deploy/adapter
   cloud-deploy/html-injector
+  cloud-deploy/qrpay-bridge
   cloud-deploy/Caddyfile
   cloud-deploy/docker-compose.yml
   cloud-deploy/.env

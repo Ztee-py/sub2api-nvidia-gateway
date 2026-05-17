@@ -9,6 +9,8 @@ cloud-deploy/.env
 cloud-deploy/.env.*
 !cloud-deploy/.env.example
 cloud-deploy/secrets/
+cloud-deploy/qrpay-bridge/watchers/wechat_windows_watcher.env
+cloud-deploy/public/inject/wechat-receive-qr.*
 
 __pycache__/
 *.pyc

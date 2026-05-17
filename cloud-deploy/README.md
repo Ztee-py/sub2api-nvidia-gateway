@@ -148,26 +148,36 @@ Expected result:
 - GPT response contains `GPT_VERIFY_OK`.
 - The script prints new rows from `usage_logs`, including `input_tokens`, `output_tokens`, `total_tokens` and `total_cost`.
 
-## 7.0 Payment And Recharge
+## 7.0 QR-Code Payment, Recharge And Subscription
 
-Sub2API has a built-in payment system. Prefer it over an external Sub2ApiPay deployment for this stack because orders, webhook verification, audit logs and balance fulfillment stay inside the same Sub2API database.
-
-Current payment callback URLs:
+This deployment includes `qrpay-bridge`, a companion service that implements the requested `maajiko/Epay` logic rather than EasyPay aggregation:
 
 ```text
-EasyPay: https://YOUR_DOMAIN/api/v1/payment/webhook/easypay
-Alipay: https://YOUR_DOMAIN/api/v1/payment/webhook/alipay
-WeChat: https://YOUR_DOMAIN/api/v1/payment/webhook/wxpay
-Stripe: https://YOUR_DOMAIN/api/v1/payment/webhook/stripe
+alipaycode: Alipay transfer page + exact amount + order remark + account-log polling
+onecode/paypage: fixed QR-code entry + internal order creation + channel selection
 ```
 
-Run the payment preflight:
+User pages:
 
-```bash
-./scripts/payment-preflight.sh
+```text
+https://YOUR_DOMAIN/purchase
+https://YOUR_DOMAIN/subscriptions
+https://YOUR_DOMAIN/orders
 ```
 
-See [Payment and recharge system](../docs/payment-recharge.md) for provider credentials, rollout steps and safety checks.
+Watcher/callback paths:
+
+```text
+Alipay account-log watcher: POST https://YOUR_DOMAIN/qrpay/api/watch/alipay-bill
+WeChat receipt watcher:     POST https://YOUR_DOMAIN/qrpay/api/watch/wechat-receipt
+VMQ-style callback:         POST https://YOUR_DOMAIN/qrpay/api/webhook/vmq
+Watcher heartbeat:          POST https://YOUR_DOMAIN/qrpay/api/watch/heartbeat
+Watcher status:             GET  https://YOUR_DOMAIN/qrpay/api/watch/status
+```
+
+For a US-hosted server, inbound HTTPS callbacks are fine when the domain and Caddy are reachable. For personal/static WeChat QR codes and for the most reliable Alipay account-log polling, run a China-side watcher or VMQ-style middle layer and let it POST signed callbacks to the US server.
+
+See [Epay QR-code closed loop](../docs/qrpay-epay-closed-loop.md) for the full flow, environment variables, watcher setup and test commands.
 
 ## 7.1 Public Access Documentation
 
@@ -236,6 +246,7 @@ cloud-deploy/public/
 cloud-deploy/scripts/
 cloud-deploy/adapter/
 cloud-deploy/html-injector/
+cloud-deploy/qrpay-bridge/
 cloud-deploy/Caddyfile
 cloud-deploy/docker-compose.yml
 cloud-deploy/.env

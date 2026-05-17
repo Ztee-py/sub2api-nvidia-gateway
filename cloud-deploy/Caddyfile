@@ -36,6 +36,20 @@
 		file_server
 	}
 
+	handle_path /qrpay-assets/* {
+		root * /srv/inject
+		file_server
+	}
+
+	handle_path /qrpay* {
+		reverse_proxy qrpay-bridge:8095
+	}
+
+	@qrpay_pages path /purchase /orders /subscriptions
+	handle @qrpay_pages {
+		reverse_proxy qrpay-bridge:8095
+	}
+
 	@sub2api_direct path /api/* /v1/* /health /assets/* /logo.png /favicon.ico /manifest* /robots.txt /sw.js
 	handle @sub2api_direct {
 		reverse_proxy sub2api:8080

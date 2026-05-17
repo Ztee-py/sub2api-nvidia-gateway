@@ -6,6 +6,8 @@ services:
     depends_on:
       html-injector:
         condition: service_healthy
+      qrpay-bridge:
+        condition: service_healthy
     ports:
       - "80:80"
       - "443:443"
@@ -47,6 +49,61 @@ services:
       timeout: 10s
       retries: 3
       start_period: 5s
+
+  qrpay-bridge:
+    build:
+      context: ./qrpay-bridge
+    container_name: sub2api-qrpay-bridge
+    restart: unless-stopped
+    depends_on:
+      sub2api:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+    environment:
+      - SUB2API_URL=http://sub2api:8080
+      - BIND_HOST=0.0.0.0
+      - PORT=8095
+      - DATABASE_HOST=postgres
+      - DATABASE_PORT=5432
+      - DATABASE_USER=${POSTGRES_USER:-sub2api}
+      - DATABASE_PASSWORD=${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}
+      - DATABASE_DBNAME=${POSTGRES_DB:-sub2api}
+      - DATABASE_SSLMODE=disable
+      - QRPAY_PUBLIC_BASE_URL=${QRPAY_PUBLIC_BASE_URL:-}
+      - QRPAY_MIN_AMOUNT=${QRPAY_MIN_AMOUNT:-1}
+      - QRPAY_MAX_AMOUNT=${QRPAY_MAX_AMOUNT:-500}
+      - QRPAY_QUICK_AMOUNTS=${QRPAY_QUICK_AMOUNTS:-2,10,30,50,100,300,500}
+      - QRPAY_ORDER_TIMEOUT_MINUTES=${QRPAY_ORDER_TIMEOUT_MINUTES:-5}
+      - QRPAY_MAX_PENDING_ORDERS=${QRPAY_MAX_PENDING_ORDERS:-3}
+      - QRPAY_AMOUNT_JITTER_CENTS=${QRPAY_AMOUNT_JITTER_CENTS:-50}
+      - QRPAY_AMOUNT_JITTER_METHODS=${QRPAY_AMOUNT_JITTER_METHODS:-wechat_code}
+      - QRPAY_ENABLE_ALIPAY_CODE=${QRPAY_ENABLE_ALIPAY_CODE:-true}
+      - QRPAY_ALIPAY_USER_ID=${QRPAY_ALIPAY_USER_ID:-}
+      - QRPAY_ENABLE_WECHAT_CODE=${QRPAY_ENABLE_WECHAT_CODE:-false}
+      - QRPAY_WECHAT_QR_IMAGE_URL=${QRPAY_WECHAT_QR_IMAGE_URL:-}
+      - QRPAY_WECHAT_PAY_URL=${QRPAY_WECHAT_PAY_URL:-}
+      - QRPAY_WATCHER_SECRET=${QRPAY_WATCHER_SECRET:-}
+      - QRPAY_ADMIN_SECRET=${QRPAY_ADMIN_SECRET:-}
+      - QRPAY_VMQ_KEY=${QRPAY_VMQ_KEY:-}
+      - QRPAY_WATCHER_INTERVAL_SECONDS=${QRPAY_WATCHER_INTERVAL_SECONDS:-30}
+      - QRPAY_WATCHER_RETRY_INTERVAL_SECONDS=${QRPAY_WATCHER_RETRY_INTERVAL_SECONDS:-10}
+      - QRPAY_WATCHER_MAX_RETRIES=${QRPAY_WATCHER_MAX_RETRIES:-2}
+      - QRPAY_WATCHER_RESEND_INTERVAL=${QRPAY_WATCHER_RESEND_INTERVAL:-10}
+      - QRPAY_WATCHER_STALE_AFTER_SECONDS=${QRPAY_WATCHER_STALE_AFTER_SECONDS:-120}
+      - QRPAY_ALERT_WEBHOOK_URL=${QRPAY_ALERT_WEBHOOK_URL:-}
+      - QRPAY_ALERT_WEBHOOK_SECRET=${QRPAY_ALERT_WEBHOOK_SECRET:-}
+      - QRPAY_PROVIDER_INSTANCE_ID=${QRPAY_PROVIDER_INSTANCE_ID:-qrpay-bridge}
+      - QRPAY_PROVIDER_KEY=${QRPAY_PROVIDER_KEY:-epay_qr}
+    networks:
+      - sub2api-network
+    logging: *default-logging
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8095/health', timeout=5).read()"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
 
   sub2api:
     image: ghcr.io/wei-shaw/sub2api:latest
