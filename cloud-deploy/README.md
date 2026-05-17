@@ -148,6 +148,27 @@ Expected result:
 - GPT response contains `GPT_VERIFY_OK`.
 - The script prints new rows from `usage_logs`, including `input_tokens`, `output_tokens`, `total_tokens` and `total_cost`.
 
+## 7.0 Payment And Recharge
+
+Sub2API has a built-in payment system. Prefer it over an external Sub2ApiPay deployment for this stack because orders, webhook verification, audit logs and balance fulfillment stay inside the same Sub2API database.
+
+Current payment callback URLs:
+
+```text
+EasyPay: https://YOUR_DOMAIN/api/v1/payment/webhook/easypay
+Alipay: https://YOUR_DOMAIN/api/v1/payment/webhook/alipay
+WeChat: https://YOUR_DOMAIN/api/v1/payment/webhook/wxpay
+Stripe: https://YOUR_DOMAIN/api/v1/payment/webhook/stripe
+```
+
+Run the payment preflight:
+
+```bash
+./scripts/payment-preflight.sh
+```
+
+See [Payment and recharge system](../docs/payment-recharge.md) for provider credentials, rollout steps and safety checks.
+
 ## 7.1 Public Access Documentation
 
 This deployment serves a lightweight public access guide at:

@@ -43,6 +43,26 @@ NVIDIA_VERIFY_OK
 GPT_VERIFY_OK
 ```
 
+## Payment And Recharge Checks
+
+Sub2API built-in payment is the recommended recharge system for this deployment. It keeps payment orders, webhook verification, audit logs and balance fulfillment inside Sub2API instead of adding an external Sub2ApiPay service.
+
+Run:
+
+```bash
+cd /opt/sub2api-nvidia/cloud-deploy
+./scripts/payment-preflight.sh
+```
+
+Before enabling a real provider:
+
+- Create a backup.
+- Configure only one provider first.
+- Keep visible payment buttons disabled until the provider passes a small real payment test.
+- Use webhook verification as the only source of truth for balance credit.
+
+See [Payment and recharge system](payment-recharge.md) for provider-specific setup and callback URLs.
+
 ## Group And Key Rules
 
 Keep groups separate:

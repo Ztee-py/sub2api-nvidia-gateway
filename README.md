@@ -93,6 +93,7 @@ NVIDIA_API_KEYS=nvapi-xxx,nvapi-yyy
 - [NVIDIA channel setup](cloud-deploy/SUB2API_NVIDIA_CHANNEL.md)
 - [NVIDIA account pool](docs/account-pool.md)
 - [GPT OAuth stability guide](docs/gpt-oauth-stability.md)
+- [Payment and recharge system](docs/payment-recharge.md)
 - [Gateway hardening notes](docs/gateway-hardening-notes.md)
 - [Production operations runbook](docs/production-runbook.md)
 
