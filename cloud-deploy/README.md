@@ -161,11 +161,12 @@ User pages:
 
 ```text
 https://YOUR_DOMAIN/purchase
+https://YOUR_DOMAIN/payment
 https://YOUR_DOMAIN/subscriptions
 https://YOUR_DOMAIN/orders
 ```
 
-All three paths render the same payment center. `/purchase` opens the 余额充值 tab, `/subscriptions` opens 套餐订阅, and `/orders` opens 我的订单. The page header shows the sanitized WeChat watcher state, including latest heartbeat and latest confirmed WeChat order time.
+All four paths render the same payment center. `/purchase` and `/payment` open the 余额充值 tab, `/subscriptions` opens 套餐订阅, and `/orders` opens 我的订单. The page header shows the sanitized WeChat watcher state, including latest heartbeat and latest confirmed WeChat order time.
 
 Admin QR-code order page:
 
@@ -208,7 +209,7 @@ It documents the public OpenAI-compatible Base URL, API key usage, Codex configu
 
 ## 7.2 User Documentation Button And Payment Sidebar Wiring
 
-The user-facing app pages include a bottom-right `API 接入文档` shortcut that opens the public access guide. Payment is not duplicated as a floating button; the injector collapses the user sidebar to one primary `充值/订阅` entry and hides duplicate sidebar entries such as `我的订阅` and `我的订单`. Non-sidebar links to `/purchase`, `/subscriptions` and `/orders` still perform full-page navigation so Caddy serves the QRPay payment center.
+The user-facing app pages include a bottom-right `API 接入文档` shortcut that opens the public access guide. Payment is not duplicated as a floating button; the injector collapses the user sidebar to one primary `充值/订阅` entry and hides duplicate sidebar entries such as `我的订阅` and `我的订单`. Non-sidebar links to `/purchase`, `/payment`, `/subscriptions` and `/orders` still perform full-page navigation so Caddy serves the QRPay payment center.
 
 The same injector adds an admin-side `QR 收款订单` link under the admin sidebar, pointing to `/qrpay/admin/orders`.
 
@@ -219,7 +220,7 @@ cloud-deploy/public/inject/zteapi-floating-doc.css
 cloud-deploy/public/inject/zteapi-floating-doc.js
 ```
 
-The documentation button is shown on normal user pages such as `/dashboard`, `/keys`, `/usage`, `/profile` and the QRPay user pages `/purchase`, `/subscriptions` and `/orders`. It is hidden on admin, QRPay admin, login, registration, setup, legal and OAuth callback pages.
+The documentation button is shown on normal user pages such as `/dashboard`, `/keys`, `/usage`, `/profile` and the QRPay user pages `/purchase`, `/payment`, `/subscriptions` and `/orders`. It is hidden on admin, QRPay admin, login, registration, setup, legal and OAuth callback pages.
 
 The injector has an internal health endpoint so Caddy only depends on it after it is ready:
 

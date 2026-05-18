@@ -1755,6 +1755,7 @@ def admin_page() -> HTMLResponse:
 
 
 @app.get("/purchase", response_class=HTMLResponse)
+@app.get("/payment", response_class=HTMLResponse)
 @app.get("/orders", response_class=HTMLResponse)
 @app.get("/subscriptions", response_class=HTMLResponse)
 def index_page() -> HTMLResponse:

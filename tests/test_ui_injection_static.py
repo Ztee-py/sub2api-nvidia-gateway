@@ -33,8 +33,20 @@ class StaticUiInjectionTests(unittest.TestCase):
         ).read_text(encoding="utf-8")
 
         self.assertIn("setPaymentMainLabel", source)
+        self.assertIn("MAIN_PAYMENT_LABEL", source)
+        self.assertIn("paymentLinkRole", source)
+        self.assertIn("sidebarPaymentScore", source)
+        self.assertIn('path === "/payment"', source)
         self.assertIn("zteapiPaymentHidden", source)
+        self.assertIn("zteapiFullNavigationBound", source)
         self.assertIn('"充值/订阅"', source)
+
+    def test_payment_route_is_served_by_qrpay(self):
+        caddy = (ROOT / "cloud-deploy" / "Caddyfile").read_text(encoding="utf-8")
+        qrpay_app = (ROOT / "cloud-deploy" / "qrpay-bridge" / "app.py").read_text(encoding="utf-8")
+
+        self.assertIn("@qrpay_pages path /purchase /payment /orders /subscriptions", caddy)
+        self.assertIn('@app.get("/payment", response_class=HTMLResponse)', qrpay_app)
 
 
 if __name__ == "__main__":

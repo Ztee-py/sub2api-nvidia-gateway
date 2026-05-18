@@ -45,22 +45,28 @@
 		reverse_proxy qrpay-bridge:8095
 	}
 
-	@qrpay_pages path /purchase /orders /subscriptions
+	@qrpay_pages path /purchase /payment /orders /subscriptions
 	handle @qrpay_pages {
 		reverse_proxy qrpay-bridge:8095
 	}
 
 	@responses_api path /v1/responses
 	handle @responses_api {
-		reverse_proxy html-injector:8090
+		reverse_proxy html-injector:8090 {
+			flush_interval -1
+		}
 	}
 
 	@sub2api_direct path /api/* /v1/* /health /assets/* /logo.png /favicon.ico /manifest* /robots.txt /sw.js
 	handle @sub2api_direct {
-		reverse_proxy sub2api:8080
+		reverse_proxy sub2api:8080 {
+			flush_interval -1
+		}
 	}
 
 	handle {
-		reverse_proxy html-injector:8090
+		reverse_proxy html-injector:8090 {
+			flush_interval -1
+		}
 	}
 }

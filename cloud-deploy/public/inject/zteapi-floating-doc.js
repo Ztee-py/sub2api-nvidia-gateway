@@ -57,16 +57,19 @@
   }
 
   function forceFullNavigation(link, target) {
-    if (!link || link.dataset.zteapiFullNavigation === target) return;
+    if (!link) return;
     link.dataset.zteapiFullNavigation = target;
     link.setAttribute("href", target);
     link.setAttribute("data-zteapi-stable-link", "1");
+    if (link.dataset.zteapiFullNavigationBound === "1") return;
+    link.dataset.zteapiFullNavigationBound = "1";
     link.addEventListener(
       "click",
       function (event) {
+        const nextTarget = link.dataset.zteapiFullNavigation || link.getAttribute("href") || target;
         event.preventDefault();
         event.stopImmediatePropagation();
-        window.location.assign(target);
+        window.location.assign(nextTarget);
       },
       true
     );
@@ -146,6 +149,92 @@
           forceFullNavigation(link, "/orders");
         }
       }
+    });
+  }
+
+  const MAIN_PAYMENT_LABEL = "\u5145\u503c/\u8ba2\u9605";
+
+  function setPaymentMainLabel(link) {
+    const label =
+      link.querySelector(".sidebar-label") ||
+      link.querySelector("span") ||
+      link;
+    if (label && compactText(label) !== MAIN_PAYMENT_LABEL) {
+      label.textContent = MAIN_PAYMENT_LABEL;
+    }
+  }
+
+  function paymentLinkRole(path, text) {
+    if (path === "/purchase" || path === "/payment") return "recharge";
+    if (path === "/subscriptions") return "plans";
+    if (path === "/orders") return "orders";
+    if (textHasAny(text, ["\u5145\u503c", "\u652f\u4ed8", "\u4ed8\u6b3e"])) return "recharge";
+    if (textHasAny(text, ["\u6211\u7684\u8ba2\u9605", "\u8ba2\u9605", "\u5957\u9910"])) return "plans";
+    if (textHasAny(text, ["\u6211\u7684\u8ba2\u5355", "\u8ba2\u5355\u8bb0\u5f55"])) return "orders";
+    return "";
+  }
+
+  function sidebarPaymentScore(item) {
+    if (item.path === "/purchase") return 0;
+    if (item.path === "/payment") return 1;
+    if (item.role === "recharge") return 2;
+    if (item.path === "/subscriptions") return 3;
+    if (item.role === "plans") return 4;
+    if (item.path === "/orders") return 5;
+    return 6;
+  }
+
+  function patchNonSidebarPaymentLink(link, role, path) {
+    if (path === "/payment" || role === "recharge") {
+      forceFullNavigation(link, "/purchase");
+    } else if (role === "plans") {
+      forceFullNavigation(link, "/subscriptions");
+    } else if (role === "orders") {
+      forceFullNavigation(link, "/orders");
+    }
+  }
+
+  function patchUserPaymentLinks() {
+    if (/^\/admin(?:\/|$)/.test(window.location.pathname || "/")) return;
+    const sidebarLinks = [];
+
+    document.querySelectorAll("a[href]").forEach((link, index) => {
+      const path = linkPath(link);
+      const text = compactText(link);
+      const role = paymentLinkRole(path, text);
+      if (!role) return;
+
+      if (isSidebarLink(link)) {
+        if (link.dataset.zteapiPaymentHidden === "1") {
+          link.style.display = "";
+          link.removeAttribute("aria-hidden");
+          link.removeAttribute("tabindex");
+          delete link.dataset.zteapiPaymentHidden;
+        }
+        sidebarLinks.push({ link, path, role, index });
+        return;
+      }
+
+      patchNonSidebarPaymentLink(link, role, path);
+    });
+
+    if (!sidebarLinks.length) return;
+
+    sidebarLinks.sort((a, b) => sidebarPaymentScore(a) - sidebarPaymentScore(b) || a.index - b.index);
+    const main = sidebarLinks[0].link;
+    forceFullNavigation(main, "/purchase");
+    setPaymentMainLabel(main);
+    main.style.display = "";
+    main.removeAttribute("aria-hidden");
+    main.removeAttribute("tabindex");
+    delete main.dataset.zteapiPaymentHidden;
+
+    sidebarLinks.slice(1).forEach(({ link }) => {
+      if (link === main) return;
+      link.style.display = "none";
+      link.setAttribute("aria-hidden", "true");
+      link.setAttribute("tabindex", "-1");
+      link.dataset.zteapiPaymentHidden = "1";
     });
   }
 

@@ -117,6 +117,9 @@ class ResponsesRequestSanitizerTests(unittest.TestCase):
 
 
 class StreamProxyTests(unittest.TestCase):
+    def test_default_stream_chunk_size_is_low_latency(self):
+        self.assertLessEqual(html_injector.STREAM_CHUNK_SIZE, 8192)
+
     def test_event_stream_detection_ignores_charset_case(self):
         self.assertTrue(html_injector.is_event_stream_response("Text/Event-Stream; charset=utf-8"))
         self.assertFalse(html_injector.is_event_stream_response("application/json"))
