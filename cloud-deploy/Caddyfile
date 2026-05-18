@@ -27,11 +27,13 @@
 	}
 
 	handle /zteapi-floating-doc.css {
+		header Cache-Control "no-store"
 		root * /srv/inject
 		file_server
 	}
 
 	handle /zteapi-floating-doc.js {
+		header Cache-Control "no-store"
 		root * /srv/inject
 		file_server
 	}

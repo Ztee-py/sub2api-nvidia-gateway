@@ -52,6 +52,7 @@ class StaticUiInjectionTests(unittest.TestCase):
         qrpay_app = (ROOT / "cloud-deploy" / "qrpay-bridge" / "app.py").read_text(encoding="utf-8")
 
         self.assertIn("@qrpay_pages path /purchase /payment /orders /subscriptions", caddy)
+        self.assertIn('header Cache-Control "no-store"', caddy)
         self.assertIn('@app.get("/payment", response_class=HTMLResponse)', qrpay_app)
 
 
