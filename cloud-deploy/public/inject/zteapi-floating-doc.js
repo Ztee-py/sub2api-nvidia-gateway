@@ -143,6 +143,11 @@
     return "";
   }
 
+  function compactElementTextForPaymentRole(node) {
+    const text = compactText(node);
+    return text.length <= 40 ? text : "";
+  }
+
   function sidebarPaymentScore(item) {
     if (item.path === "/purchase") return 0;
     if (item.path === "/payment") return 1;
@@ -183,12 +188,23 @@
     );
   }
 
+  function isNativeSub2ApiPaymentView() {
+    if (!document.body || isQrpayPaymentDocument()) return false;
+    const text = compactText(document.body);
+    return textHasAny(text, [
+      "\u5145\u503c\u529f\u80fd\u6682\u672a\u5f00\u653e",
+      "Balanceiscreditedautomaticallyafterverifiedpayment",
+      "\u901a\u8fc7\u5185\u5d4c\u9875\u9762\u5b8c\u6210\u5145\u503c/\u8ba2\u9605"
+    ]);
+  }
+
   function forceQrpayPageIfNeeded() {
     const path = window.location.pathname || "/";
-    if (!QRPAY_PAGE_PATHS.includes(path) || /^\/admin(?:\/|$)/.test(path)) return false;
+    const nativePaymentView = isNativeSub2ApiPaymentView();
+    if ((!QRPAY_PAGE_PATHS.includes(path) && !nativePaymentView) || /^\/admin(?:\/|$)/.test(path)) return false;
     if (isQrpayPaymentDocument()) return false;
 
-    const target = qrpayTargetForPath(path);
+    const target = nativePaymentView ? "/purchase" : qrpayTargetForPath(path);
     const targetUrl = new URL(target, window.location.origin).href;
     if (window.location.href === targetUrl) {
       window.location.reload();
@@ -276,15 +292,13 @@
       const canNavigate =
         node.matches &&
         node.matches("a[href],button,[role='button'],[role='link'],[data-href],[data-to],[data-path],[class*='sidebar-link'],[class*='sidebar-item'],[class*='menu-item'],[class*='nav-item'],li");
-      if (canNavigate) {
-        const path = elementPath(node);
-        const role = paymentLinkRole(path, compactText(node));
-        if (role && (isSidebarLink(node) || QRPAY_PAGE_PATHS.includes(path))) {
-          event.preventDefault();
-          event.stopImmediatePropagation();
-          window.location.assign(qrpayTargetForRole(role));
-          return;
-        }
+      const path = elementPath(node);
+      const role = paymentLinkRole(path, canNavigate ? compactText(node) : compactElementTextForPaymentRole(node));
+      if (role && (isSidebarLink(node) || QRPAY_PAGE_PATHS.includes(path))) {
+        event.preventDefault();
+        event.stopImmediatePropagation();
+        window.location.assign(qrpayTargetForRole(role));
+        return;
       }
       node = node.parentElement;
     }
@@ -393,6 +407,7 @@
 
   wrapHistory("pushState");
   wrapHistory("replaceState");
+  document.addEventListener("pointerdown", handlePaymentNavigationClick, true);
   document.addEventListener("click", handlePaymentNavigationClick, true);
   window.addEventListener("popstate", refresh);
   window.addEventListener("pageshow", scheduleRefresh);

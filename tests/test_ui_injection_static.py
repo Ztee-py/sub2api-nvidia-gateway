@@ -43,8 +43,12 @@ class StaticUiInjectionTests(unittest.TestCase):
         self.assertIn("SIDEBAR_PAYMENT_SELECTOR", source)
         self.assertIn("collectSidebarPaymentLinks", source)
         self.assertIn("handlePaymentNavigationClick", source)
+        self.assertIn('document.addEventListener("pointerdown", handlePaymentNavigationClick, true)', source)
         self.assertIn('document.addEventListener("click", handlePaymentNavigationClick, true)', source)
         self.assertIn("forceQrpayPageIfNeeded", source)
+        self.assertIn("isNativeSub2ApiPaymentView", source)
+        self.assertIn("compactElementTextForPaymentRole", source)
+        self.assertIn(r"\u5145\u503c\u529f\u80fd\u6682\u672a\u5f00\u653e", source)
         self.assertIn('window.location.replace(target)', source)
 
     def test_payment_route_is_served_by_qrpay(self):
