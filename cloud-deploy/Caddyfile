@@ -44,11 +44,13 @@
 	}
 
 	handle_path /qrpay* {
+		header Cache-Control "no-store"
 		reverse_proxy qrpay-bridge:8095
 	}
 
 	@qrpay_pages path /purchase /payment /orders /subscriptions
 	handle @qrpay_pages {
+		header Cache-Control "no-store"
 		reverse_proxy qrpay-bridge:8095
 	}
 

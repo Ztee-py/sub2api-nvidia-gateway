@@ -74,7 +74,15 @@ if ($InstallStartupTask) {
     $arguments = Build-PowerShellArguments -ResolvedEnvFile $resolvedEnvFile -Hidden $true -IncludeRunSwitches $false
     $action = New-ScheduledTaskAction -Execute "powershell.exe" -Argument $arguments
     $trigger = New-ScheduledTaskTrigger -AtLogOn
-    $settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DisallowStartIfOnBatteries:$false -RestartCount 3 -RestartInterval (New-TimeSpan -Minutes 1)
+    $settingsArgs = @{
+        AllowStartIfOnBatteries = $true
+        RestartCount = 3
+        RestartInterval = New-TimeSpan -Minutes 1
+    }
+    if ((Get-Command New-ScheduledTaskSettingsSet).Parameters.ContainsKey("DisallowStartIfOnBatteries")) {
+        $settingsArgs.DisallowStartIfOnBatteries = $false
+    }
+    $settings = New-ScheduledTaskSettingsSet @settingsArgs
     Register-ScheduledTask -TaskName $TaskName -Action $action -Trigger $trigger -Settings $settings -Description "Runs the ZteAPI WeChat QR payment watcher after Windows logon." -Force | Out-Null
     Write-Host "installed startup task: $TaskName"
     Write-Host "it will start hidden after this Windows user logs in; run manually once now with .\run_wechat_windows_watcher.ps1 if you want immediate listening."

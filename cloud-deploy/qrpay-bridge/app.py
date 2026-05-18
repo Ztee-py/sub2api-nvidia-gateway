@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import io
+import html
 import json
 import os
+import re
 import secrets
 import string
 import urllib.error
@@ -10,6 +12,7 @@ import urllib.request
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal, InvalidOperation
 from typing import Any
+from urllib.parse import urlparse
 
 import psycopg
 import qrcode
@@ -98,6 +101,7 @@ class Settings:
     watcher_stale_after_seconds = env_int("QRPAY_WATCHER_STALE_AFTER_SECONDS", 120)
     alert_webhook_url = os.environ.get("QRPAY_ALERT_WEBHOOK_URL", "").strip()
     alert_webhook_secret = os.environ.get("QRPAY_ALERT_WEBHOOK_SECRET", "").strip()
+    max_request_body_bytes = env_int("QRPAY_MAX_REQUEST_BODY_BYTES", 512 * 1024)
 
     provider_instance_id = os.environ.get("QRPAY_PROVIDER_INSTANCE_ID", "qrpay-bridge")
     provider_key = os.environ.get("QRPAY_PROVIDER_KEY", "epay_qr")
@@ -107,6 +111,45 @@ settings = Settings()
 app = FastAPI(title="ZteAPI QR Pay Bridge")
 
 QR_PAYMENT_METHODS = {"alipay_code", "wechat_code"}
+SAFE_HOST_RE = re.compile(r"^[A-Za-z0-9.-]+(?::[0-9]{1,5})?$")
+SAFE_RELATIVE_URL_RE = re.compile(r"^/[A-Za-z0-9._~!$&'()*+,;=:@%/?#-]*$")
+JSON_TRUNCATED = "[truncated]"
+
+
+@app.middleware("http")
+async def harden_http_surface(request: Request, call_next):
+    content_length = request.headers.get("content-length")
+    if content_length:
+        try:
+            if int(content_length) > settings.max_request_body_bytes:
+                return JSONResponse(
+                    {"code": 413, "message": "request body too large", "data": None},
+                    status_code=413,
+                )
+        except ValueError:
+            return JSONResponse(
+                {"code": 400, "message": "invalid content-length", "data": None},
+                status_code=400,
+            )
+
+    response = await call_next(request)
+    response.headers.setdefault("Cache-Control", "no-store")
+    response.headers.setdefault("X-Content-Type-Options", "nosniff")
+    response.headers.setdefault("X-Frame-Options", "SAMEORIGIN")
+    response.headers.setdefault("Referrer-Policy", "strict-origin-when-cross-origin")
+    response.headers.setdefault(
+        "Content-Security-Policy",
+        "default-src 'self'; "
+        "script-src 'self' 'unsafe-inline'; "
+        "style-src 'self' 'unsafe-inline'; "
+        "img-src 'self' data: https:; "
+        "connect-src 'self'; "
+        "object-src 'none'; "
+        "base-uri 'self'; "
+        "form-action 'self'; "
+        "frame-ancestors 'self'",
+    )
+    return response
 
 
 def db_dsn() -> str:
@@ -124,8 +167,12 @@ def public_base(request: Request) -> str:
     if settings.public_base_url:
         return settings.public_base_url
     forwarded_host = request.headers.get("x-forwarded-host")
-    host = forwarded_host or request.headers.get("host", "")
-    proto = request.headers.get("x-forwarded-proto", "https")
+    host = (forwarded_host or request.headers.get("host", "")).split(",", 1)[0].strip()
+    if not SAFE_HOST_RE.fullmatch(host):
+        raise HTTPException(400, "invalid host header")
+    proto = request.headers.get("x-forwarded-proto", "https").split(",", 1)[0].strip().lower()
+    if proto not in {"http", "https"}:
+        proto = "https"
     return f"{proto}://{host}".rstrip("/")
 
 
@@ -135,6 +182,34 @@ def now_utc() -> datetime:
 
 def json_response(data: Any) -> JSONResponse:
     return JSONResponse({"code": 0, "message": "success", "data": data})
+
+
+def escape_html(value: Any) -> str:
+    return html.escape("" if value is None else str(value), quote=True)
+
+
+def safe_public_url(value: str, *, allow_absolute_https: bool = True) -> str:
+    text = (value or "").strip()
+    if not text:
+        return ""
+    if SAFE_RELATIVE_URL_RE.fullmatch(text):
+        return text
+    parsed = urlparse(text)
+    if allow_absolute_https and parsed.scheme == "https" and parsed.netloc:
+        return text
+    return ""
+
+
+def bounded_json(value: Any, max_bytes: int = 32768) -> Any:
+    try:
+        raw = json.dumps(value, ensure_ascii=False, default=str)
+    except TypeError:
+        raw = json.dumps({"repr": repr(value)}, ensure_ascii=False)
+    encoded = raw.encode("utf-8")
+    if len(encoded) <= max_bytes:
+        return json.loads(raw)
+    truncated = encoded[:max_bytes].decode("utf-8", errors="ignore")
+    return {"_truncated": True, "preview": truncated, "marker": JSON_TRUNCATED}
 
 
 def random_suffix(n: int = 8) -> str:
@@ -204,6 +279,10 @@ def ensure_default_monitor(conn, name: str, kind: str) -> None:
 def send_monitor_alert(payload: dict[str, Any]) -> None:
     if not settings.alert_webhook_url:
         return
+    parsed = urlparse(settings.alert_webhook_url)
+    if parsed.scheme != "https" or not parsed.netloc:
+        print("qrpay alert webhook skipped: URL must be https", flush=True)
+        return
     headers = {"Content-Type": "application/json"}
     if settings.alert_webhook_secret:
         headers["X-Qrpay-Alert-Secret"] = settings.alert_webhook_secret
@@ -267,7 +346,7 @@ def record_monitor_heartbeat(
             repeated = True
             down_count = 0
 
-    raw_payload = payload or {}
+    raw_payload = bounded_json(payload or {})
     last_heartbeat_at = now_utc() if touch_last_heartbeat else monitor.get("last_heartbeat_at")
     conn.execute(
         """
@@ -610,7 +689,7 @@ def audit(conn, order_id: int, action: str, detail: dict[str, Any], operator: st
         INSERT INTO payment_audit_logs(order_id, action, detail, operator, created_at)
         VALUES (%s, %s, %s, %s, NOW())
         """,
-        (str(order_id), action, json.dumps(detail, ensure_ascii=False), operator),
+        (str(order_id), action, json.dumps(bounded_json(detail), ensure_ascii=False), operator),
     )
 
 
@@ -630,7 +709,7 @@ def public_order_payload(row: dict[str, Any]) -> dict[str, Any]:
         "payment_type": row["payment_type"],
         "order_type": row["order_type"],
         "status": row["status"],
-        "pay_url": row.get("pay_url"),
+        "pay_url": safe_public_url(row.get("pay_url") or ""),
         "expires_at": row["expires_at"].isoformat() if row.get("expires_at") else None,
         "paid_at": row["paid_at"].isoformat() if row.get("paid_at") else None,
         "completed_at": row["completed_at"].isoformat() if row.get("completed_at") else None,
@@ -914,6 +993,9 @@ def confirm_payment(
     out_trade_no = safe_order_no(out_trade_no)
     if provider not in QR_PAYMENT_METHODS and provider != "manual":
         raise HTTPException(400, f"unsupported payment provider: {provider}")
+    provider_trade_no = str(provider_trade_no or "").strip()[:128]
+    if not provider_trade_no:
+        provider_trade_no = f"{provider}-{out_trade_no}"
     paid_amount_decimal = parse_money_or_400(paid_amount, "paid_amount")
     order = select_order_for_update(conn, out_trade_no)
     if not order:
@@ -944,7 +1026,7 @@ def confirm_payment(
         ON CONFLICT (provider, provider_trade_no) DO NOTHING
         RETURNING id
         """,
-        (provider, provider_trade_no, order["id"], out_trade_no, paid_amount_decimal, payer or "", Jsonb(raw_payload)),
+        (provider, provider_trade_no, order["id"], out_trade_no, paid_amount_decimal, (payer or "")[:200], Jsonb(bounded_json(raw_payload))),
     ).fetchone()
     if not receipt:
         refreshed = conn.execute("SELECT * FROM payment_orders WHERE id=%s", (order["id"],)).fetchone()
@@ -1103,14 +1185,19 @@ def render_pay_page(row: dict[str, Any]) -> str:
     method_label = "支付宝收款码" if is_alipay else "微信收款码"
     pay_amount = f"{money_to_decimal(row['pay_amount']):.2f}"
     remark = f"请勿添加备注-{row['out_trade_no']}"
-    wechat_img = settings.wechat_qr_image_url if row["payment_type"] == "wechat_code" else ""
+    out_trade_no_html = escape_html(row["out_trade_no"])
+    method_label_html = escape_html(method_label)
+    pay_amount_html = escape_html(pay_amount)
+    remark_html = escape_html(remark if is_alipay else "以金额扰动或 watcher 回传为准")
+    wechat_img = safe_public_url(settings.wechat_qr_image_url) if row["payment_type"] == "wechat_code" else ""
+    qr_src = escape_html(wechat_img) if wechat_img else f"/qrpay/api/orders/{out_trade_no_html}/qr.png"
     alipay_uid = settings.alipay_user_id
     return f"""<!doctype html>
 <html lang="zh-CN">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>{method_label}</title>
+  <title>{method_label_html}</title>
   <style>
     body {{ margin:0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; background:#f5f7fb; color:#111827; }}
     .wrap {{ min-height:100vh; display:grid; place-items:center; padding:24px; }}
@@ -1128,11 +1215,11 @@ def render_pay_page(row: dict[str, Any]) -> str:
 <body>
   <div class="wrap">
     <main class="panel">
-      <h1>{method_label}</h1>
-      <div class="meta">订单号：{row['out_trade_no']}</div>
-      <div class="amount">¥{pay_amount}</div>
-      {"<img class='qr' src='/qrpay/api/orders/" + row["out_trade_no"] + "/qr.png' alt='payment qrcode'>" if not wechat_img else "<img class='qr' src='" + wechat_img + "' alt='wechat qrcode'>"}
-      <div class="meta">收款识别备注：{remark if is_alipay else "以金额扰动或 watcher 回传为准"}</div>
+      <h1>{method_label_html}</h1>
+      <div class="meta">订单号：{out_trade_no_html}</div>
+      <div class="amount">¥{pay_amount_html}</div>
+      <img class="qr" src="{qr_src}" alt="payment qrcode">
+      <div class="meta">收款识别备注：{remark_html}</div>
       {"<button class='btn' id='openAlipay'>在支付宝内拉起转账</button>" if is_alipay else ""}
       <a class="btn secondary" href="/dashboard">返回控制台</a>
       <div class="tip" id="status">等待支付确认...</div>
@@ -1222,7 +1309,7 @@ async def watch_alipay_bill(request: Request, x_qrpay_secret: str | None = Heade
             amount = item.get("trans_amount") or item.get("amount")
             payer = item.get("other_account") or item.get("payer") or ""
             try:
-                result = confirm_payment(conn, order_no, "alipay_code", str(provider_trade_no), amount, payer, item)
+                result = confirm_payment(conn, order_no, "alipay_code", str(provider_trade_no), amount, payer, bounded_json(item))
                 results.append({"out_trade_no": order_no, "status": result["status"]})
             except HTTPException as err:
                 results.append({"out_trade_no": order_no, "error": err.detail})
@@ -1264,14 +1351,15 @@ async def watch_wechat_receipt(request: Request, x_qrpay_secret: str | None = He
             if len(matches) != 1:
                 raise HTTPException(409, f"wechat amount matched {len(matches)} pending orders")
             out_trade_no = matches[0]["out_trade_no"]
-        result = confirm_payment(conn, out_trade_no, "wechat_code", str(provider_trade_no), paid_amount, payer, body)
+        safe_body = bounded_json(body)
+        result = confirm_payment(conn, out_trade_no, "wechat_code", str(provider_trade_no), paid_amount, payer, safe_body)
         record_monitor_heartbeat(
             conn,
             "wechat-receipt",
             "wechat",
             True,
             "received wechat receipt",
-            {"out_trade_no": out_trade_no, "provider_trade_no": str(provider_trade_no)},
+            {"out_trade_no": out_trade_no, "provider_trade_no": str(provider_trade_no)[:128]},
         )
         conn.commit()
     return json_response(result)
@@ -1303,7 +1391,7 @@ async def vmq_webhook(request: Request) -> Response:
             str(data.get("transactionId") or pay_id),
             really_price,
             str(data.get("payer") or ""),
-            data,
+            bounded_json(data),
         )
         conn.commit()
     return Response("success", media_type="text/plain")
@@ -1318,7 +1406,7 @@ async def admin_confirm(out_trade_no: str, request: Request, x_qrpay_secret: str
     provider = body.get("provider") or "manual"
     provider_trade_no = body.get("trade_no") or f"manual-{out_trade_no}"
     with db_conn() as conn:
-        result = confirm_payment(conn, out_trade_no, provider, provider_trade_no, paid_amount, body.get("payer") or "", body)
+        result = confirm_payment(conn, out_trade_no, provider, provider_trade_no, paid_amount, body.get("payer") or "", bounded_json(body))
         conn.commit()
     return json_response(result)
 
@@ -1534,6 +1622,16 @@ INDEX_HTML = """<!doctype html>
       if (!res.ok || payload.code) throw new Error(payload.message || payload.detail || res.statusText);
       return payload.data;
     }
+    function html(value) {
+      return String(value ?? '').replace(/[&<>"']/g, ch => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[ch]));
+    }
+    function safeClass(value) {
+      return String(value ?? '').replace(/[^A-Za-z0-9_-]/g, '');
+    }
+    function money(value) {
+      const n = Number(value);
+      return Number.isFinite(n) ? n.toFixed(2) : html(value);
+    }
     function showError(err) { document.getElementById('errorBox').textContent = err ? String(err.message || err) : ''; }
     function fmtTime(value) {
       if (!value) return '-';
@@ -1552,7 +1650,7 @@ INDEX_HTML = """<!doctype html>
       const cls = status.ok ? 'ok' : (status.last_heartbeat_at ? 'bad' : 'warn');
       box.className = 'watch ' + cls;
       box.innerHTML = [
-        `<div><strong>${status.label || '微信监听未启用'}</strong><span>${status.monitor_name || '等待本地 watcher 心跳'}</span></div>`,
+        `<div><strong>${html(status.label || '微信监听未启用')}</strong><span>${html(status.monitor_name || '等待本地 watcher 心跳')}</span></div>`,
         `<div><strong>最近心跳</strong><span>${fmtTime(status.last_heartbeat_at)}</span></div>`,
         `<div><strong>最近确认订单</strong><span>${fmtTime(status.last_confirmed_order_at)}</span></div>`
       ].join('');
@@ -1575,7 +1673,7 @@ INDEX_HTML = """<!doctype html>
       stopPayPolling();
       rememberSuccess(item);
       const label = item.order_type === 'subscription' ? '订阅已开通' : '充值已到账';
-      document.getElementById('payInfo').innerHTML = `<span class="success">${label}</span><br>订单号：${item.out_trade_no}<br>5 秒后返回控制台。`;
+      document.getElementById('payInfo').innerHTML = `<span class="success">${html(label)}</span><br>订单号：${html(item.out_trade_no)}<br>5 秒后返回控制台。`;
       document.getElementById('payLink').style.display = 'none';
       refresh().catch(() => {});
       if (state.redirectTimer) clearTimeout(state.redirectTimer);
@@ -1590,10 +1688,10 @@ INDEX_HTML = """<!doctype html>
         }
         if (item.status === 'EXPIRED' || item.status === 'FAILED') {
           stopPayPolling();
-          document.getElementById('payInfo').innerHTML = `订单号：${item.out_trade_no}<br>应付金额：¥${item.pay_amount}<br>状态：${item.status}`;
+          document.getElementById('payInfo').innerHTML = `订单号：${html(item.out_trade_no)}<br>应付金额：¥${money(item.pay_amount)}<br>状态：${html(item.status)}`;
           return;
         }
-        document.getElementById('payInfo').innerHTML = `订单号：${item.out_trade_no}<br>应付金额：¥${item.pay_amount}<br>状态：${item.status}<br>正在等待到账确认...`;
+        document.getElementById('payInfo').innerHTML = `订单号：${html(item.out_trade_no)}<br>应付金额：¥${money(item.pay_amount)}<br>状态：${html(item.status)}<br>正在等待到账确认...`;
       } catch (_) {}
       state.payPollTimer = setTimeout(() => pollPayment(outTradeNo), 2000);
     }
@@ -1603,10 +1701,10 @@ INDEX_HTML = """<!doctype html>
       history.replaceState(null, '', name === 'recharge' ? '/purchase' : '/' + (name === 'plans' ? 'subscriptions' : 'orders'));
     }
     function renderConfig() {
-      document.getElementById('amounts').innerHTML = state.config.quick_amounts.map(v => `<button class="amount ${state.amount===v?'active':''}" data-amount="${v}">¥${v}</button>`).join('');
+      document.getElementById('amounts').innerHTML = state.config.quick_amounts.map(v => `<button class="amount ${state.amount===v?'active':''}" data-amount="${html(v)}">¥${money(v)}</button>`).join('');
       document.querySelectorAll('.amount').forEach(b => b.onclick = () => { state.amount = Number(b.dataset.amount); document.getElementById('customAmount').value=''; renderConfig(); });
       if (!state.method && state.config.methods[0]) state.method = state.config.methods[0].id;
-      document.getElementById('methods').innerHTML = state.config.methods.map(m => `<button class="method ${state.method===m.id?'active':''}" data-method="${m.id}">${m.label}</button>`).join('');
+      document.getElementById('methods').innerHTML = state.config.methods.map(m => `<button class="method ${state.method===m.id?'active':''}" data-method="${html(m.id)}">${html(m.label)}</button>`).join('');
       document.querySelectorAll('.method').forEach(b => b.onclick = () => { state.method = b.dataset.method; renderConfig(); });
       const m = state.config.methods.find(x => x.id === state.method);
       document.getElementById('methodNotice').textContent = m ? m.description : '请选择支付方式。';
@@ -1614,14 +1712,14 @@ INDEX_HTML = """<!doctype html>
       renderPlans();
     }
     function renderPlans() {
-      const html = (state.config.plans || []).map(p => `<div class="plan"><strong>${p.name}</strong><div class="price">¥${p.price}</div><div class="notice">${p.group_name || ''} ${p.validity_days}${p.validity_unit}</div><button class="btn" data-plan="${p.id}" style="width:100%;margin-top:14px">立即开通/续费</button></div>`).join('');
-      document.getElementById('plansList').innerHTML = html || '<p class="notice">暂无可售套餐，请先在 Sub2API 后台创建 subscription_plans。</p>';
+      const planHtml = (state.config.plans || []).map(p => `<div class="plan"><strong>${html(p.name)}</strong><div class="price">¥${money(p.price)}</div><div class="notice">${html(p.group_name || '')} ${html(p.validity_days)}${html(p.validity_unit)}</div><button class="btn" data-plan="${html(p.id)}" style="width:100%;margin-top:14px">立即开通/续费</button></div>`).join('');
+      document.getElementById('plansList').innerHTML = planHtml || '<p class="notice">暂无可售套餐，请先在 Sub2API 后台创建 subscription_plans。</p>';
       document.getElementById('planWarning').textContent = watcherWarning();
       document.querySelectorAll('[data-plan]').forEach(b => b.onclick = () => createOrder({order_type:'subscription', plan_id:Number(b.dataset.plan)}));
     }
     function renderOrders() {
       if (!state.orders.length) { document.getElementById('ordersTable').innerHTML = '<p class="notice">暂无订单。</p>'; return; }
-      document.getElementById('ordersTable').innerHTML = `<table><thead><tr><th>订单</th><th>类型</th><th>金额</th><th>状态</th><th>时间</th></tr></thead><tbody>${state.orders.map(o => `<tr><td>${o.out_trade_no}</td><td>${o.order_type}</td><td>¥${o.pay_amount}</td><td><span class="pill ${o.status}">${o.status}</span></td><td>${(o.completed_at || o.paid_at || o.expires_at || '').replace('T',' ').slice(0,19)}</td></tr>`).join('')}</tbody></table>`;
+      document.getElementById('ordersTable').innerHTML = `<table><thead><tr><th>订单</th><th>类型</th><th>金额</th><th>状态</th><th>时间</th></tr></thead><tbody>${state.orders.map(o => `<tr><td>${html(o.out_trade_no)}</td><td>${html(o.order_type)}</td><td>¥${money(o.pay_amount)}</td><td><span class="pill ${safeClass(o.status)}">${html(o.status)}</span></td><td>${html((o.completed_at || o.paid_at || o.expires_at || '').replace('T',' ').slice(0,19))}</td></tr>`).join('')}</tbody></table>`;
     }
     async function refresh() {
       showError('');
@@ -1651,7 +1749,7 @@ INDEX_HTML = """<!doctype html>
       } catch (err) { showError(err); }
     }
     function openPay(order) {
-      document.getElementById('payInfo').innerHTML = `订单号：${order.out_trade_no}<br>应付金额：¥${order.pay_amount}<br>状态：${order.status}`;
+      document.getElementById('payInfo').innerHTML = `订单号：${html(order.out_trade_no)}<br>应付金额：¥${money(order.pay_amount)}<br>状态：${html(order.status)}`;
       document.getElementById('payQr').src = '/qrpay/api/orders/' + order.out_trade_no + '/qr.png';
       document.getElementById('payLink').href = order.pay_url;
       document.getElementById('payLink').style.display = 'block';

@@ -32,6 +32,7 @@ cloud-deploy/caddy_data/
 cloud-deploy/caddy_config/
 cloud-deploy/data/
 cloud-deploy/backups/
+local-backups/
 
 release/
 

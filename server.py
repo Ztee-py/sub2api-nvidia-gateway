@@ -1940,7 +1940,12 @@ def render_dashboard(store: UsageStore, pool: ApiKeyPool, config: AppConfig) -> 
         box.textContent = payload.error ? payload.error.message : '创建失败';
         return;
       }}
-      box.innerHTML = '<strong>新用户 Token:</strong> <code>' + payload.token + '</code>';
+      box.textContent = '';
+      const strong = document.createElement('strong');
+      strong.textContent = '新用户 Token:';
+      const code = document.createElement('code');
+      code.textContent = payload.token || '';
+      box.append(strong, ' ', code);
     }});
   </script>
 </body>
