@@ -16,6 +16,14 @@ TIMEOUT_SECONDS = float(os.environ.get("UPSTREAM_TIMEOUT_SECONDS", "900"))
 HEALTH_PATH = os.environ.get("HEALTH_PATH", "/__html_injector_health")
 STRIP_RESPONSES_IMAGE_TOOL = os.environ.get("STRIP_RESPONSES_IMAGE_TOOL", "true").lower() not in {"0", "false", "no", "off"}
 STREAM_CHUNK_SIZE = int(os.environ.get("UPSTREAM_STREAM_CHUNK_SIZE", "65536"))
+CODEX_COMPAT_TARGET_MODEL = os.environ.get("CODEX_COMPAT_TARGET_MODEL", "gpt-5.5").strip()
+CODEX_COMPAT_TARGET_REASONING_EFFORT = os.environ.get("CODEX_COMPAT_TARGET_REASONING_EFFORT", "medium").strip()
+CODEX_COMPAT_REWRITE_MODELS = {
+    item.strip()
+    for item in os.environ.get("CODEX_COMPAT_REWRITE_MODELS", "gpt-5.4-mini").split(",")
+    if item.strip()
+}
+CODEX_COMPAT_USER_AGENT_MARKER = os.environ.get("CODEX_COMPAT_USER_AGENT_MARKER", "Codex").strip().lower()
 
 HOP_BY_HOP_HEADERS = {
     "connection",
@@ -64,17 +72,20 @@ def should_sanitize_responses_request(method: str, path: str, content_type: str)
     return request_path == "/v1/responses" and "json" in content_type.lower()
 
 
+def should_patch_responses_request(method: str, path: str, content_type: str) -> bool:
+    if method.upper() != "POST":
+        return False
+    request_path = path.split("?", 1)[0]
+    return request_path == "/v1/responses" and "json" in content_type.lower()
+
+
 def is_event_stream_response(content_type: str) -> bool:
     return "text/event-stream" in content_type.lower()
 
 
-def strip_responses_image_generation_tool(body: bytes) -> tuple[bytes, bool]:
-    try:
-        payload = json.loads(body.decode("utf-8"))
-    except (UnicodeDecodeError, json.JSONDecodeError):
-        return body, False
-    if not isinstance(payload, dict):
-        return body, False
+def strip_responses_image_generation_tool_from_payload(payload: dict) -> bool:
+    if not STRIP_RESPONSES_IMAGE_TOOL:
+        return False
 
     changed = False
     tools = payload.get("tools")
@@ -101,9 +112,78 @@ def strip_responses_image_generation_tool(body: bytes) -> tuple[bytes, bool]:
         payload.pop("tool_choice", None)
         changed = True
 
+    return changed
+
+
+def is_codex_request(user_agent: str) -> bool:
+    if not CODEX_COMPAT_USER_AGENT_MARKER:
+        return False
+    return CODEX_COMPAT_USER_AGENT_MARKER in user_agent.lower()
+
+
+def apply_codex_model_guard_from_payload(payload: dict, user_agent: str) -> bool:
+    if not CODEX_COMPAT_TARGET_MODEL or not CODEX_COMPAT_REWRITE_MODELS or not is_codex_request(user_agent):
+        return False
+
+    current_model = str(payload.get("model", "")).strip()
+    if current_model not in CODEX_COMPAT_REWRITE_MODELS:
+        return False
+
+    changed = False
+    if payload.get("model") != CODEX_COMPAT_TARGET_MODEL:
+        payload["model"] = CODEX_COMPAT_TARGET_MODEL
+        changed = True
+
+    if CODEX_COMPAT_TARGET_REASONING_EFFORT:
+        reasoning = payload.get("reasoning")
+        if not isinstance(reasoning, dict):
+            reasoning = {}
+        if reasoning.get("effort") != CODEX_COMPAT_TARGET_REASONING_EFFORT:
+            reasoning["effort"] = CODEX_COMPAT_TARGET_REASONING_EFFORT
+            payload["reasoning"] = reasoning
+            changed = True
+
+    return changed
+
+
+def load_responses_payload(body: bytes) -> tuple[dict | None, bytes]:
+    try:
+        payload = json.loads(body.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        return None, body
+    if not isinstance(payload, dict):
+        return None, body
+    return payload, body
+
+
+def dump_payload(payload: dict) -> bytes:
+    return json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+
+
+def strip_responses_image_generation_tool(body: bytes) -> tuple[bytes, bool]:
+    payload, original_body = load_responses_payload(body)
+    if payload is None:
+        return original_body, False
+    changed = strip_responses_image_generation_tool_from_payload(payload)
     if not changed:
-        return body, False
-    return json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8"), True
+        return original_body, False
+    return dump_payload(payload), True
+
+
+def patch_responses_request_body(body: bytes, user_agent: str) -> tuple[bytes, list[str]]:
+    payload, original_body = load_responses_payload(body)
+    if payload is None:
+        return original_body, []
+
+    changes = []
+    if strip_responses_image_generation_tool_from_payload(payload):
+        changes.append("stripped unsupported Responses image generation tool declaration")
+    if apply_codex_model_guard_from_payload(payload, user_agent):
+        changes.append("rewrote Codex auxiliary Responses model to configured primary model")
+
+    if not changes:
+        return original_body, []
+    return dump_payload(payload), changes
 
 
 class ProxyHandler(BaseHTTPRequestHandler):
@@ -155,11 +235,11 @@ class ProxyHandler(BaseHTTPRequestHandler):
         if self.command in {"POST", "PUT", "PATCH", "DELETE"}:
             length = int(self.headers.get("Content-Length") or "0")
             body = self.rfile.read(length) if length > 0 else None
-            if body and should_sanitize_responses_request(self.command, self.path, self.headers.get("Content-Type", "")):
-                sanitized_body, changed = strip_responses_image_generation_tool(body)
-                if changed:
-                    self.log_message("stripped unsupported Responses image generation tool declaration")
-                    body = sanitized_body
+            if body and should_patch_responses_request(self.command, self.path, self.headers.get("Content-Type", "")):
+                patched_body, changes = patch_responses_request_body(body, self.headers.get("User-Agent", ""))
+                for message in changes:
+                    self.log_message(message)
+                body = patched_body
 
         headers = {}
         for key, value in self.headers.items():

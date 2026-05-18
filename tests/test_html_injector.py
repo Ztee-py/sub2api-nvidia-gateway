@@ -76,6 +76,45 @@ class ResponsesRequestSanitizerTests(unittest.TestCase):
             )
         )
 
+    def test_codex_auxiliary_model_is_rewritten_to_primary_model(self):
+        body = json.dumps(
+            {
+                "model": "gpt-5.4-mini",
+                "input": "hello",
+                "reasoning": {"effort": "low"},
+                "stream": True,
+            }
+        ).encode("utf-8")
+
+        patched, changes = html_injector.patch_responses_request_body(
+            body,
+            "Codex Desktop/0.131.0-alpha.9",
+        )
+        payload = json.loads(patched.decode("utf-8"))
+
+        self.assertIn("rewrote Codex auxiliary Responses model to configured primary model", changes)
+        self.assertEqual(payload["model"], "gpt-5.5")
+        self.assertEqual(payload["reasoning"]["effort"], "medium")
+
+    def test_model_guard_only_applies_to_codex_user_agent(self):
+        body = b'{"model":"gpt-5.4-mini","input":"hello","reasoning":{"effort":"low"}}'
+
+        patched, changes = html_injector.patch_responses_request_body(body, "node")
+
+        self.assertEqual(patched, body)
+        self.assertEqual(changes, [])
+
+    def test_model_guard_leaves_primary_codex_model_unchanged(self):
+        body = b'{"model":"gpt-5.5","input":"hello","reasoning":{"effort":"medium"}}'
+
+        patched, changes = html_injector.patch_responses_request_body(
+            body,
+            "Codex Desktop/0.131.0-alpha.9",
+        )
+
+        self.assertEqual(patched, body)
+        self.assertEqual(changes, [])
+
 
 class StreamProxyTests(unittest.TestCase):
     def test_event_stream_detection_ignores_charset_case(self):

@@ -40,6 +40,10 @@ services:
       - UPSTREAM_URL=http://sub2api:8080
       - BIND_HOST=0.0.0.0
       - PORT=8090
+      - CODEX_COMPAT_TARGET_MODEL=${CODEX_COMPAT_TARGET_MODEL:-gpt-5.5}
+      - CODEX_COMPAT_TARGET_REASONING_EFFORT=${CODEX_COMPAT_TARGET_REASONING_EFFORT:-medium}
+      - CODEX_COMPAT_REWRITE_MODELS=${CODEX_COMPAT_REWRITE_MODELS:-gpt-5.4-mini}
+      - CODEX_COMPAT_USER_AGENT_MARKER=${CODEX_COMPAT_USER_AGENT_MARKER:-Codex}
     networks:
       - sub2api-network
     logging: *default-logging

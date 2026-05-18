@@ -118,6 +118,21 @@ curl -fsS https://Zteapi.com/dashboard | grep -F zteapi-floating-doc.js
 
 If the button must be rolled back quickly, route normal HTML pages in `Caddyfile` back to `sub2api:8080`, then run `docker compose up -d caddy`.
 
+## Codex Model Guard
+
+Codex Desktop can send auxiliary `/v1/responses` requests with a smaller helper model even when the visible session is configured for a primary model. The `html-injector` service rewrites matching Codex User-Agent requests from `CODEX_COMPAT_REWRITE_MODELS` to `CODEX_COMPAT_TARGET_MODEL` and sets `CODEX_COMPAT_TARGET_REASONING_EFFORT`.
+
+Production defaults:
+
+```text
+CODEX_COMPAT_TARGET_MODEL=gpt-5.5
+CODEX_COMPAT_TARGET_REASONING_EFFORT=medium
+CODEX_COMPAT_REWRITE_MODELS=gpt-5.4-mini
+CODEX_COMPAT_USER_AGENT_MARKER=Codex
+```
+
+Run `VERIFY_CODEX_MODEL_GUARD=true ./scripts/verify-endpoints.sh` with a GPT test key to confirm new Codex-style auxiliary requests are logged as the target model, not the helper model.
+
 ## Logs
 
 ```bash

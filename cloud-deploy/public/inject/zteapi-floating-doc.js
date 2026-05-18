@@ -12,24 +12,6 @@
     /^\/legal(?:\/|$)/
   ];
 
-  const DOC_ROUTES = [
-    /^\/$/,
-    /^\/home(?:\/|$)/,
-    /^\/dashboard(?:\/|$)/,
-    /^\/keys(?:\/|$)/,
-    /^\/usage(?:\/|$)/,
-    /^\/redeem(?:\/|$)/,
-    /^\/affiliate(?:\/|$)/,
-    /^\/available-channels(?:\/|$)/,
-    /^\/profile(?:\/|$)/,
-    /^\/subscriptions(?:\/|$)/,
-    /^\/purchase(?:\/|$)/,
-    /^\/orders(?:\/|$)/,
-    /^\/payment(?:\/|$)/,
-    /^\/monitor(?:\/|$)/,
-    /^\/key-usage(?:\/|$)/
-  ];
-
   function docsUrl() {
     const configured = window.__APP_CONFIG__ && window.__APP_CONFIG__.doc_url;
     return configured || "/docs/";
@@ -38,7 +20,7 @@
   function shouldShowDocs() {
     const path = window.location.pathname || "/";
     if (DOC_HIDDEN_ROUTES.some((pattern) => pattern.test(path))) return false;
-    return DOC_ROUTES.some((pattern) => pattern.test(path));
+    return true;
   }
 
   function actionHtml(href, className, label, svgPaths) {
@@ -53,6 +35,7 @@
   }
 
   function ensureDock() {
+    if (!document.body) return null;
     let dock = document.querySelector(".zteapi-floating-actions");
     if (dock) return dock;
 
@@ -76,6 +59,7 @@
     if (!link || link.dataset.zteapiFullNavigation === target) return;
     link.dataset.zteapiFullNavigation = target;
     link.setAttribute("href", target);
+    link.setAttribute("data-zteapi-stable-link", "1");
     link.addEventListener(
       "click",
       function (event) {
@@ -87,13 +71,38 @@
     );
   }
 
+  function linkPath(link) {
+    try {
+      return new URL(link.getAttribute("href") || "", window.location.origin).pathname;
+    } catch (_) {
+      return "";
+    }
+  }
+
+  function compactText(node) {
+    return (node.textContent || "").replace(/\s+/g, "");
+  }
+
+  function textHasAny(text, terms) {
+    return terms.some((term) => text.includes(term));
+  }
+
   function patchUserPaymentLinks() {
-    document.querySelectorAll('a[href="/purchase"]').forEach((link) => {
-      forceFullNavigation(link, "/purchase");
-    });
-    document.querySelectorAll('a[href="/orders"]').forEach((link) => {
-      const text = (link.textContent || "").replace(/\s+/g, "");
-      if (text.includes("订单")) forceFullNavigation(link, "/orders");
+    if (/^\/admin(?:\/|$)/.test(window.location.pathname || "/")) return;
+    document.querySelectorAll("a[href]").forEach((link) => {
+      const path = linkPath(link);
+      const text = compactText(link);
+      if (path === "/purchase" || text.includes("充值")) {
+        forceFullNavigation(link, "/purchase");
+        return;
+      }
+      if (path === "/subscriptions" || textHasAny(text, ["订阅", "套餐"])) {
+        forceFullNavigation(link, "/subscriptions");
+        return;
+      }
+      if (path === "/orders" || textHasAny(text, ["我的订单", "订单记录"])) {
+        forceFullNavigation(link, "/orders");
+      }
     });
   }
 
@@ -133,6 +142,7 @@
   }
 
   function showSuccessToast() {
+    if (!document.body) return;
     let raw = "";
     try {
       raw = sessionStorage.getItem("zteapi_qrpay_success") || "";
@@ -163,6 +173,7 @@
 
   function refresh() {
     const dock = ensureDock();
+    if (!dock) return;
     const docs = dock.querySelector(".zteapi-floating-doc");
     docs.href = docsUrl();
     dock.classList.toggle("is-hidden", !shouldShowDocs());
@@ -198,6 +209,9 @@
   wrapHistory("pushState");
   wrapHistory("replaceState");
   window.addEventListener("popstate", refresh);
+  window.addEventListener("pageshow", scheduleRefresh);
+  window.addEventListener("focus", scheduleRefresh);
   window.addEventListener("zteapi-route-change", refresh);
   new MutationObserver(scheduleRefresh).observe(document.documentElement, { childList: true, subtree: true });
+  setInterval(scheduleRefresh, 3000);
 })();

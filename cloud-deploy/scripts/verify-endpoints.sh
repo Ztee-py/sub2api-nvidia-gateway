@@ -18,6 +18,7 @@ GPT_TEST_MODEL="${GPT_TEST_MODEL:-gpt-5.4}"
 NVIDIA_TEST_KEY="${NVIDIA_TEST_KEY:-}"
 GPT_TEST_KEY="${GPT_TEST_KEY:-}"
 VERIFY_USAGE_LOGS="${VERIFY_USAGE_LOGS:-true}"
+VERIFY_CODEX_MODEL_GUARD="${VERIFY_CODEX_MODEL_GUARD:-true}"
 
 if [[ -z "${PUBLIC_DOMAIN:-}" && -z "${BASE_URL:-}" ]]; then
   echo "PUBLIC_DOMAIN or BASE_URL is required." >&2
@@ -105,6 +106,85 @@ payload = {
     "stream": True,
     "max_output_tokens": 24,
 }
+
+run_codex_model_guard_test() {
+  local label="$1"
+  local key="$2"
+  local requested_model="$3"
+  local expected_model="$4"
+  local expected_effort="$5"
+  local expected_marker="CODEX_MODEL_GUARD_OK"
+  local before_guard=0
+
+  echo "== ${label} Codex model guard =="
+  if [[ "${VERIFY_USAGE_LOGS}" == "true" ]]; then
+    before_guard="$(docker compose exec -T postgres psql -U "${POSTGRES_USER:-sub2api}" "${POSTGRES_DB:-sub2api}" -At -c "select coalesce(max(id),0) from usage_logs;")"
+  fi
+
+  python3 - "${BASE_URL}" "${key}" "${requested_model}" "${expected_marker}" <<'PY'
+import json
+import sys
+import urllib.request
+
+base_url, key, model, expected = sys.argv[1:5]
+payload = {
+    "model": model,
+    "input": f"Reply exactly: {expected}.",
+    "stream": True,
+    "reasoning": {"effort": "low"},
+    "max_output_tokens": 24,
+}
+req = urllib.request.Request(
+    f"{base_url}/v1/responses",
+    data=json.dumps(payload).encode("utf-8"),
+    headers={
+        "Authorization": f"Bearer {key}",
+        "Content-Type": "application/json",
+        "Accept": "text/event-stream",
+        "User-Agent": "Codex Desktop/verify-endpoints",
+    },
+    method="POST",
+)
+with urllib.request.urlopen(req, timeout=180) as resp:
+    raw = resp.read().decode("utf-8", errors="replace")
+
+summary = {
+    "bytes": len(raw.encode("utf-8")),
+    "has_expected_marker": expected in raw,
+    "has_response_completed": "response.completed" in raw,
+}
+print(json.dumps(summary, ensure_ascii=False, indent=2))
+
+if expected not in raw:
+    raise SystemExit(f"Expected marker {expected!r} not found in Codex model guard stream.")
+if "response.completed" not in raw:
+    raise SystemExit("Codex model guard stream ended without response.completed.")
+PY
+
+  if [[ "${VERIFY_USAGE_LOGS}" == "true" ]]; then
+    local row
+    row="$(docker compose exec -T postgres psql -U "${POSTGRES_USER:-sub2api}" "${POSTGRES_DB:-sub2api}" -At -F $'\t' -v before_guard="${before_guard}" <<'SQL'
+select requested_model, coalesce(reasoning_effort, '')
+from usage_logs
+where id > :before_guard
+  and user_agent like 'Codex Desktop/%'
+order by id desc
+limit 1;
+SQL
+)"
+    local actual_model actual_effort
+    IFS=$'\t' read -r actual_model actual_effort <<<"${row}"
+    printf '{"requested_model":"%s","reasoning_effort":"%s"}\n' "${actual_model}" "${actual_effort}"
+    if [[ "${actual_model}" != "${expected_model}" ]]; then
+      echo "Expected Codex guard usage model ${expected_model}, got ${actual_model:-<empty>}." >&2
+      exit 1
+    fi
+    if [[ -n "${expected_effort}" && "${actual_effort}" != "${expected_effort}" ]]; then
+      echo "Expected Codex guard reasoning effort ${expected_effort}, got ${actual_effort:-<empty>}." >&2
+      exit 1
+    fi
+  fi
+}
 req = urllib.request.Request(
     f"{base_url}/v1/responses",
     data=json.dumps(payload).encode("utf-8"),
@@ -145,6 +225,9 @@ fi
 if [[ -n "${GPT_TEST_KEY}" ]]; then
   run_chat_test "OpenAI GPT OAuth via Sub2API" "${GPT_TEST_KEY}" "${GPT_TEST_MODEL}" "GPT_VERIFY_OK"
   run_responses_stream_test "OpenAI GPT OAuth via Sub2API" "${GPT_TEST_KEY}" "${GPT_TEST_MODEL}" "GPT_RESPONSES_STREAM_OK"
+  if [[ "${VERIFY_CODEX_MODEL_GUARD}" == "true" ]]; then
+    run_codex_model_guard_test "OpenAI GPT OAuth via Sub2API" "${GPT_TEST_KEY}" "gpt-5.4-mini" "${GPT_TEST_MODEL}" "medium"
+  fi
 fi
 
 if [[ "${VERIFY_USAGE_LOGS}" == "true" ]]; then
