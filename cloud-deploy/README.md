@@ -165,6 +165,14 @@ https://YOUR_DOMAIN/subscriptions
 https://YOUR_DOMAIN/orders
 ```
 
+Admin QR-code order page:
+
+```text
+https://YOUR_DOMAIN/qrpay/admin/orders
+```
+
+This page reads the same `payment_orders` rows created by the user payment flow, so QR-code orders can be checked even if the upstream Sub2API admin SPA hides or filters an unsupported QR payment method label.
+
 Watcher/callback paths:
 
 ```text
@@ -195,9 +203,11 @@ cloud-deploy/public/docs/
 
 It documents the public OpenAI-compatible Base URL, API key usage, Codex configuration and simple SDK examples. Keep real user API keys out of this directory and out of Git.
 
-## 7.2 Floating User Documentation Button
+## 7.2 User Documentation Button And Payment Sidebar Wiring
 
-The user-facing app pages include a bottom-right `API 接入文档` shortcut that opens the public access guide. It is injected by a lightweight `html-injector` service so the upstream Sub2API image does not need to be rebuilt.
+The user-facing app pages include a bottom-right `API 接入文档` shortcut that opens the public access guide. Payment is not duplicated as a floating button; the injector instead makes the existing left-sidebar `充值/订阅` and `我的订单` links perform full-page navigation so Caddy serves the QRPay pages at `/purchase` and `/orders`.
+
+The same injector adds an admin-side `QR 收款订单` link under the admin sidebar, pointing to `/qrpay/admin/orders`.
 
 Static assets:
 
@@ -206,7 +216,7 @@ cloud-deploy/public/inject/zteapi-floating-doc.css
 cloud-deploy/public/inject/zteapi-floating-doc.js
 ```
 
-The button is shown on normal user pages such as `/dashboard`, `/keys`, `/usage`, `/profile` and `/subscriptions`. It is hidden on admin, login, registration, setup, legal and OAuth callback pages.
+The documentation button is shown on normal user pages such as `/dashboard`, `/keys`, `/usage`, `/profile` and `/subscriptions`. It is hidden on admin, login, registration, setup, legal and OAuth callback pages.
 
 The injector has an internal health endpoint so Caddy only depends on it after it is ready:
 

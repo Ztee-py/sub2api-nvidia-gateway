@@ -177,6 +177,16 @@ For WeChat personal/static QR-code payments, choose one:
 
 `wechat-receipt` accepts either an explicit `out_trade_no` or a unique `amount`. If no order number is provided, the bridge only confirms when exactly one pending WeChat order has that payment amount. This is why `QRPAY_AMOUNT_JITTER_METHODS=wechat_code` is enabled by default.
 
+After an order becomes `COMPLETED`, the user payment page shows a success state, stores a one-time browser notice, and redirects to `/dashboard` after 5 seconds. The injected Sub2API shell then displays the success notice on the dashboard.
+
+Admin order inspection is available at:
+
+```text
+https://YOUR_DOMAIN/qrpay/admin/orders
+```
+
+It uses the admin's existing Sub2API login token in the browser, or `X-Qrpay-Secret: QRPAY_ADMIN_SECRET` for direct API calls to `GET /qrpay/api/admin/orders`.
+
 Example custom watcher payload:
 
 ```json

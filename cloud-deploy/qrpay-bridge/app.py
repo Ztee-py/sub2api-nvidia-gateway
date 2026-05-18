@@ -429,6 +429,7 @@ def sub2api_auth_me(authorization: str) -> dict[str, Any]:
         "id": int(user_id),
         "email": data.get("email", ""),
         "username": data.get("username", ""),
+        "role": data.get("role", ""),
         "status": data.get("status", ""),
         "balance": decimal_to_float(data.get("balance", 0)),
     }
@@ -436,6 +437,16 @@ def sub2api_auth_me(authorization: str) -> dict[str, Any]:
 
 async def current_user(request: Request) -> dict[str, Any]:
     return sub2api_auth_me(request.headers.get("authorization", ""))
+
+
+async def current_admin(request: Request, secret: str | None = None) -> dict[str, Any]:
+    if secret:
+        require_shared_secret(secret, settings.admin_secret, "admin")
+        return {"id": 0, "email": "admin-secret", "username": "admin-secret", "role": "admin"}
+    user = await current_user(request)
+    if str(user.get("role") or "").lower() != "admin":
+        raise HTTPException(403, "admin permission required")
+    return user
 
 
 def enabled_methods() -> list[dict[str, Any]]:
@@ -558,6 +569,25 @@ def public_order_payload(row: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def admin_order_payload(row: dict[str, Any]) -> dict[str, Any]:
+    payload = public_order_payload(row)
+    payload.update(
+        {
+            "user_id": row.get("user_id"),
+            "user_email": row.get("user_email") or "",
+            "user_name": row.get("user_name") or "",
+            "payment_trade_no": row.get("payment_trade_no") or "",
+            "provider_instance_id": row.get("provider_instance_id") or "",
+            "provider_key": row.get("provider_key") or "",
+            "client_ip": row.get("client_ip") or "",
+            "src_host": row.get("src_host") or "",
+            "created_at": row["created_at"].isoformat() if row.get("created_at") else None,
+            "updated_at": row["updated_at"].isoformat() if row.get("updated_at") else None,
+        }
+    )
+    return payload
+
+
 def list_user_orders(conn, user_id: int, limit: int = 30) -> list[dict[str, Any]]:
     rows = conn.execute(
         """
@@ -571,6 +601,39 @@ def list_user_orders(conn, user_id: int, limit: int = 30) -> list[dict[str, Any]
         (user_id, limit),
     ).fetchall()
     return [public_order_payload(row) for row in rows]
+
+
+def list_admin_qr_orders(
+    conn,
+    limit: int = 100,
+    status: str = "",
+    payment_type: str = "",
+    keyword: str = "",
+) -> list[dict[str, Any]]:
+    where = ["payment_type IN ('alipay_code', 'wechat_code')"]
+    params: list[Any] = []
+    if status:
+        where.append("status=%s")
+        params.append(status)
+    if payment_type:
+        where.append("payment_type=%s")
+        params.append(payment_type)
+    if keyword:
+        where.append("(out_trade_no ILIKE %s OR user_email ILIKE %s OR user_name ILIKE %s)")
+        like = f"%{keyword}%"
+        params.extend([like, like, like])
+    params.append(limit)
+    rows = conn.execute(
+        f"""
+        SELECT *
+          FROM payment_orders
+         WHERE {" AND ".join(where)}
+         ORDER BY id DESC
+         LIMIT %s
+        """,
+        tuple(params),
+    ).fetchall()
+    return [admin_order_payload(row) for row in rows]
 
 
 def create_payment_order(conn, req: dict[str, Any], user: dict[str, Any], request: Request) -> dict[str, Any]:
@@ -874,6 +937,29 @@ async def my_orders(request: Request) -> JSONResponse:
     return json_response(rows)
 
 
+@app.get("/api/admin/orders")
+async def admin_orders(request: Request, x_qrpay_secret: str | None = Header(default=None)) -> JSONResponse:
+    await current_admin(request, x_qrpay_secret)
+    params = request.query_params
+    try:
+        limit = int(params.get("limit", "100"))
+    except ValueError:
+        raise HTTPException(400, "limit must be an integer")
+    limit = max(1, min(limit, 200))
+    status = str(params.get("status") or "").strip().upper()
+    payment_type = str(params.get("payment_type") or "").strip()
+    keyword = str(params.get("keyword") or "").strip()[:80]
+    if status and status not in {"PENDING", "PAID", "COMPLETED", "EXPIRED", "FAILED", "CANCELLED"}:
+        raise HTTPException(400, "unsupported status")
+    if payment_type and payment_type not in {"alipay_code", "wechat_code"}:
+        raise HTTPException(400, "unsupported payment_type")
+    with db_conn() as conn:
+        expire_pending_orders(conn)
+        rows = list_admin_qr_orders(conn, limit=limit, status=status, payment_type=payment_type, keyword=keyword)
+        conn.commit()
+    return json_response(rows)
+
+
 @app.get("/api/orders/{out_trade_no}")
 async def get_order(out_trade_no: str, request: Request) -> JSONResponse:
     user = await current_user(request)
@@ -945,6 +1031,7 @@ def render_pay_page(row: dict[str, Any]) -> str:
     .qr {{ width:248px; height:248px; display:block; object-fit:contain; margin:18px auto; border:1px solid #e5e7eb; border-radius:6px; }}
     .meta {{ color:#4b5563; font-size:14px; line-height:1.8; word-break:break-all; }}
     .btn {{ display:block; width:100%; border:0; border-radius:6px; padding:13px 16px; background:#111827; color:white; font-weight:700; text-align:center; text-decoration:none; cursor:pointer; margin-top:14px; }}
+    .btn.secondary {{ background:#374151; }}
     .tip {{ margin-top:14px; color:#6b7280; font-size:13px; line-height:1.7; }}
     .ok {{ color:#059669; font-weight:700; }}
   </style>
@@ -958,20 +1045,35 @@ def render_pay_page(row: dict[str, Any]) -> str:
       {"<img class='qr' src='/qrpay/api/orders/" + row["out_trade_no"] + "/qr.png' alt='payment qrcode'>" if not wechat_img else "<img class='qr' src='" + wechat_img + "' alt='wechat qrcode'>"}
       <div class="meta">收款识别备注：{remark if is_alipay else "以金额扰动或 watcher 回传为准"}</div>
       {"<button class='btn' id='openAlipay'>在支付宝内拉起转账</button>" if is_alipay else ""}
+      <a class="btn secondary" href="/dashboard">返回控制台</a>
       <div class="tip" id="status">等待支付确认...</div>
     </main>
   </div>
   <script>
     const order = {order_json};
     const remark = {json.dumps(remark, ensure_ascii=False)};
+    function rememberSuccess(item) {{
+      try {{
+        sessionStorage.setItem('zteapi_qrpay_success', JSON.stringify({{
+          out_trade_no: item.out_trade_no,
+          amount: item.amount,
+          pay_amount: item.pay_amount,
+          order_type: item.order_type
+        }}));
+      }} catch (_) {{}}
+    }}
+    function finish(item) {{
+      rememberSuccess(item);
+      document.getElementById('status').innerHTML = '<span class="ok">支付已完成，5 秒后返回控制台...</span>';
+      setTimeout(() => {{ location.href = '/dashboard'; }}, 5000);
+    }}
     function poll() {{
       fetch('/qrpay/api/public/orders/' + order.out_trade_no)
         .then(r => r.json())
         .then(res => {{
           const item = res.data || {{}};
           if (item.status === 'COMPLETED') {{
-            document.getElementById('status').innerHTML = '<span class="ok">支付已完成，正在返回订单页...</span>';
-            setTimeout(() => {{ location.href = '/orders'; }}, 900);
+            finish(item);
           }} else if (item.status === 'EXPIRED') {{
             document.getElementById('status').textContent = '订单已过期，请重新下单。';
           }} else {{
@@ -1210,7 +1312,9 @@ INDEX_HTML = """<!doctype html>
     .method { border:1px solid var(--line); background:#fff; border-radius:6px; padding:12px 14px; cursor:pointer; font-weight:800; }
     .method.active { border-color:var(--primary); box-shadow:0 0 0 2px rgba(17,24,39,.12); }
     .btn { border:0; background:var(--primary); color:#fff; border-radius:6px; padding:12px 16px; font-weight:800; cursor:pointer; }
+    .btn.secondary { background:#374151; color:#fff; text-decoration:none; display:inline-flex; align-items:center; justify-content:center; }
     .btn:disabled { opacity:.45; cursor:not-allowed; }
+    .top-actions { display:flex; gap:10px; flex-wrap:wrap; justify-content:flex-end; }
     .plans { display:grid; grid-template-columns:repeat(auto-fit,minmax(230px,1fr)); gap:12px; }
     .plan { border:1px solid var(--line); border-radius:8px; padding:16px; background:#fff; }
     .price { font-size:28px; font-weight:900; margin:8px 0; }
@@ -1227,6 +1331,7 @@ INDEX_HTML = """<!doctype html>
     .qr { display:block; width:240px; height:240px; object-fit:contain; margin:16px auto; border:1px solid var(--line); border-radius:6px; }
     .notice { color:var(--muted); line-height:1.7; font-size:14px; }
     .error { color:#991b1b; font-weight:700; }
+    .success { color:var(--ok); font-weight:800; }
     @media (max-width: 820px) { .grid, .row { grid-template-columns:1fr; } .top { align-items:flex-start; flex-direction:column; } }
   </style>
 </head>
@@ -1234,7 +1339,10 @@ INDEX_HTML = """<!doctype html>
   <main class="shell">
     <div class="top">
       <div><h1>充值/订阅</h1><div class="sub">余额充值、套餐订阅、订单状态在这里完成闭环。</div></div>
-      <button class="btn" id="refreshBtn">刷新</button>
+      <div class="top-actions">
+        <a class="btn secondary" href="/dashboard">返回控制台</a>
+        <button class="btn" id="refreshBtn">刷新</button>
+      </div>
     </div>
     <div class="tabs">
       <button class="tab active" data-tab="recharge">充值</button>
@@ -1280,7 +1388,7 @@ INDEX_HTML = """<!doctype html>
     </div>
   </div>
   <script>
-    const state = { config:null, amount:null, method:null, orders:[] };
+    const state = { config:null, amount:null, method:null, orders:[], payPollTimer:null, redirectTimer:null };
     function token() {
       const stores = [localStorage, sessionStorage];
       const preferred = ['token','access_token','auth_token','jwt','sub2api_token'];
@@ -1297,6 +1405,46 @@ INDEX_HTML = """<!doctype html>
       return payload.data;
     }
     function showError(err) { document.getElementById('errorBox').textContent = err ? String(err.message || err) : ''; }
+    function rememberSuccess(item) {
+      try {
+        sessionStorage.setItem('zteapi_qrpay_success', JSON.stringify({
+          out_trade_no: item.out_trade_no,
+          amount: item.amount,
+          pay_amount: item.pay_amount,
+          order_type: item.order_type
+        }));
+      } catch (_) {}
+    }
+    function stopPayPolling() {
+      if (state.payPollTimer) clearTimeout(state.payPollTimer);
+      state.payPollTimer = null;
+    }
+    function finishPayment(item) {
+      stopPayPolling();
+      rememberSuccess(item);
+      const label = item.order_type === 'subscription' ? '订阅已开通' : '充值已到账';
+      document.getElementById('payInfo').innerHTML = `<span class="success">${label}</span><br>订单号：${item.out_trade_no}<br>5 秒后返回控制台。`;
+      document.getElementById('payLink').style.display = 'none';
+      refresh().catch(() => {});
+      if (state.redirectTimer) clearTimeout(state.redirectTimer);
+      state.redirectTimer = setTimeout(() => { location.href = '/dashboard'; }, 5000);
+    }
+    async function pollPayment(outTradeNo) {
+      try {
+        const item = await api('/orders/' + outTradeNo);
+        if (item.status === 'COMPLETED') {
+          finishPayment(item);
+          return;
+        }
+        if (item.status === 'EXPIRED' || item.status === 'FAILED') {
+          stopPayPolling();
+          document.getElementById('payInfo').innerHTML = `订单号：${item.out_trade_no}<br>应付金额：¥${item.pay_amount}<br>状态：${item.status}`;
+          return;
+        }
+        document.getElementById('payInfo').innerHTML = `订单号：${item.out_trade_no}<br>应付金额：¥${item.pay_amount}<br>状态：${item.status}<br>正在等待到账确认...`;
+      } catch (_) {}
+      state.payPollTimer = setTimeout(() => pollPayment(outTradeNo), 2000);
+    }
     function setTab(name) {
       document.querySelectorAll('.tab').forEach(b => b.classList.toggle('active', b.dataset.tab === name));
       document.querySelectorAll('.view').forEach(v => v.style.display = v.id === name ? (name === 'recharge' ? 'grid' : 'block') : 'none');
@@ -1349,12 +1497,15 @@ INDEX_HTML = """<!doctype html>
       document.getElementById('payInfo').innerHTML = `订单号：${order.out_trade_no}<br>应付金额：¥${order.pay_amount}<br>状态：${order.status}`;
       document.getElementById('payQr').src = '/qrpay/api/orders/' + order.out_trade_no + '/qr.png';
       document.getElementById('payLink').href = order.pay_url;
+      document.getElementById('payLink').style.display = 'block';
       document.getElementById('payModal').classList.add('open');
+      stopPayPolling();
+      pollPayment(order.out_trade_no);
     }
     document.querySelectorAll('.tab').forEach(b => b.onclick = () => setTab(b.dataset.tab));
     document.getElementById('refreshBtn').onclick = refresh;
     document.getElementById('createRecharge').onclick = () => createOrder({order_type:'balance'});
-    document.getElementById('closeModal').onclick = () => document.getElementById('payModal').classList.remove('open');
+    document.getElementById('closeModal').onclick = () => { stopPayPolling(); document.getElementById('payModal').classList.remove('open'); };
     document.getElementById('customAmount').oninput = () => { state.amount = null; renderConfig(); };
     if (location.pathname.includes('orders')) setTab('orders'); else if (location.pathname.includes('subscriptions')) setTab('plans'); else setTab('recharge');
     refresh().catch(showError);
@@ -1363,9 +1514,135 @@ INDEX_HTML = """<!doctype html>
 </html>"""
 
 
+ADMIN_HTML = """<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>ZteAPI QR 收款订单</title>
+  <style>
+    :root { color-scheme: light; --text:#111827; --muted:#6b7280; --line:#e5e7eb; --bg:#f7f8fb; --panel:#fff; --primary:#111827; --ok:#047857; --warn:#b45309; --bad:#991b1b; }
+    * { box-sizing:border-box; }
+    body { margin:0; font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; background:var(--bg); color:var(--text); }
+    .shell { max-width:1220px; margin:0 auto; padding:28px 18px 48px; }
+    .top { display:flex; justify-content:space-between; align-items:flex-end; gap:16px; margin-bottom:18px; }
+    h1 { margin:0; font-size:28px; letter-spacing:0; }
+    .sub { color:var(--muted); margin-top:6px; }
+    .actions { display:flex; gap:10px; flex-wrap:wrap; justify-content:flex-end; }
+    .btn { border:0; background:var(--primary); color:#fff; border-radius:6px; padding:11px 14px; font-weight:800; cursor:pointer; text-decoration:none; display:inline-flex; align-items:center; justify-content:center; }
+    .btn.secondary { background:#374151; }
+    .filters { display:grid; grid-template-columns: 1fr 170px 170px 110px; gap:10px; margin:18px 0; }
+    input, select { width:100%; border:1px solid var(--line); border-radius:6px; padding:11px 12px; font:inherit; background:#fff; }
+    .panel { background:var(--panel); border:1px solid var(--line); border-radius:8px; padding:16px; overflow:auto; }
+    table { width:100%; border-collapse:collapse; font-size:14px; min-width:980px; }
+    th, td { border-bottom:1px solid var(--line); padding:10px 8px; text-align:left; vertical-align:top; }
+    th { color:#374151; font-size:12px; text-transform:uppercase; }
+    .pill { display:inline-flex; border-radius:999px; padding:3px 8px; background:#eef2ff; font-size:12px; font-weight:800; }
+    .PENDING { background:#fef3c7; color:#92400e; }
+    .COMPLETED { background:#d1fae5; color:#065f46; }
+    .EXPIRED, .FAILED, .CANCELLED { background:#fee2e2; color:#991b1b; }
+    .muted { color:var(--muted); }
+    .error { color:var(--bad); font-weight:800; }
+    @media (max-width: 820px) { .top { align-items:flex-start; flex-direction:column; } .filters { grid-template-columns:1fr; } }
+  </style>
+</head>
+<body>
+  <main class="shell">
+    <div class="top">
+      <div><h1>QR 收款订单</h1><div class="sub">这里直接读取 QRPay 写入的 Sub2API payment_orders，管理员和用户订单使用同一张订单表。</div></div>
+      <div class="actions">
+        <a class="btn secondary" href="/admin/orders">返回原订单后台</a>
+        <a class="btn secondary" href="/admin">返回管理后台</a>
+        <button class="btn" id="refreshBtn">刷新</button>
+      </div>
+    </div>
+    <div class="filters">
+      <input id="keyword" placeholder="搜索订单号、用户邮箱、用户名">
+      <select id="paymentType">
+        <option value="">全部方式</option>
+        <option value="wechat_code">微信收款码</option>
+        <option value="alipay_code">支付宝收款码</option>
+      </select>
+      <select id="status">
+        <option value="">全部状态</option>
+        <option value="PENDING">PENDING</option>
+        <option value="PAID">PAID</option>
+        <option value="COMPLETED">COMPLETED</option>
+        <option value="EXPIRED">EXPIRED</option>
+        <option value="FAILED">FAILED</option>
+        <option value="CANCELLED">CANCELLED</option>
+      </select>
+      <select id="limit">
+        <option value="50">50 条</option>
+        <option value="100" selected>100 条</option>
+        <option value="200">200 条</option>
+      </select>
+    </div>
+    <div class="panel" id="ordersPanel"><p class="muted">正在加载...</p></div>
+    <p class="error" id="errorBox"></p>
+  </main>
+  <script>
+    function token() {
+      const stores = [localStorage, sessionStorage];
+      const preferred = ['auth_token','token','access_token','jwt','sub2api_token'];
+      for (const s of stores) for (const k of preferred) { const v = s.getItem(k); if (v) return v.replace(/^Bearer\\s+/i,''); }
+      for (const s of stores) for (let i=0;i<s.length;i++) { const v = s.getItem(s.key(i)); if (v && /^eyJ/.test(v)) return v; }
+      return '';
+    }
+    function html(value) {
+      return String(value ?? '').replace(/[&<>"']/g, ch => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[ch]));
+    }
+    function fmt(value) {
+      return value ? String(value).replace('T',' ').slice(0,19) : '';
+    }
+    function methodLabel(value) {
+      return value === 'wechat_code' ? '微信收款码' : value === 'alipay_code' ? '支付宝收款码' : value;
+    }
+    async function loadOrders() {
+      document.getElementById('errorBox').textContent = '';
+      const params = new URLSearchParams();
+      for (const id of ['keyword','paymentType','status','limit']) {
+        const value = document.getElementById(id).value.trim();
+        if (!value) continue;
+        params.set(id === 'paymentType' ? 'payment_type' : id, value);
+      }
+      const headers = {};
+      const t = token();
+      if (t) headers.Authorization = 'Bearer ' + t;
+      const res = await fetch('/qrpay/api/admin/orders?' + params.toString(), { headers });
+      const payload = await res.json().catch(() => ({}));
+      if (!res.ok || payload.code) throw new Error(payload.message || payload.detail || res.statusText);
+      renderOrders(payload.data || []);
+    }
+    function renderOrders(rows) {
+      if (!rows.length) {
+        document.getElementById('ordersPanel').innerHTML = '<p class="muted">暂无 QR 收款订单。</p>';
+        return;
+      }
+      document.getElementById('ordersPanel').innerHTML = `<table><thead><tr><th>ID</th><th>订单号</th><th>用户</th><th>方式</th><th>类型</th><th>金额</th><th>实付</th><th>状态</th><th>支付流水</th><th>创建时间</th><th>完成时间</th></tr></thead><tbody>${rows.map(o => `<tr><td>#${o.id}</td><td>${html(o.out_trade_no)}</td><td>${html(o.user_email || o.user_name || o.user_id)}</td><td>${html(methodLabel(o.payment_type))}</td><td>${html(o.order_type)}</td><td>¥${html(o.amount)}</td><td>¥${html(o.pay_amount)}</td><td><span class="pill ${html(o.status)}">${html(o.status)}</span></td><td>${html(o.payment_trade_no || '')}</td><td>${html(fmt(o.created_at))}</td><td>${html(fmt(o.completed_at || o.paid_at))}</td></tr>`).join('')}</tbody></table>`;
+    }
+    let timer = null;
+    function scheduleLoad() {
+      if (timer) clearTimeout(timer);
+      timer = setTimeout(() => loadOrders().catch(err => { document.getElementById('errorBox').textContent = err.message || String(err); }), 220);
+    }
+    document.getElementById('refreshBtn').onclick = () => scheduleLoad();
+    for (const id of ['keyword','paymentType','status','limit']) document.getElementById(id).addEventListener('input', scheduleLoad);
+    scheduleLoad();
+  </script>
+</body>
+</html>"""
+
+
 @app.get("/", response_class=HTMLResponse)
 def index_root() -> HTMLResponse:
     return HTMLResponse(INDEX_HTML)
+
+
+@app.get("/admin", response_class=HTMLResponse)
+@app.get("/admin/orders", response_class=HTMLResponse)
+def admin_page() -> HTMLResponse:
+    return HTMLResponse(ADMIN_HTML)
 
 
 @app.get("/purchase", response_class=HTMLResponse)

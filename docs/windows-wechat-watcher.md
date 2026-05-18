@@ -38,9 +38,13 @@ Fill:
 ```text
 QRPAY_BRIDGE_URL=https://Zteapi.com/qrpay
 QRPAY_WATCHER_SECRET=your-real-secret
+WECHAT_WATCHER_SOURCE=wechat-window-ocr
+WECHAT_WINDOW_OCR_NO_FOREGROUND=false
 ```
 
 Do not commit `wechat_windows_watcher.env`.
+
+`WECHAT_WINDOW_OCR_NO_FOREGROUND=false` is the practical default. The OCR helper first tries to capture the WeChat window in the background. If that capture is blank, it falls back to bringing the WeChat window forward and reading the visible window. Set it to `true` only if you prefer "never steal focus" and accept that some PC WeChat builds may return blank captures.
 
 ## Parser Smoke Test
 
@@ -96,9 +100,22 @@ By default it does not send the raw notification text. Add `-SendRawText` only w
 After it works manually, create a logon task:
 
 ```powershell
-$watcher = "C:\path\to\sub2api-nvidia-gateway\cloud-deploy\qrpay-bridge\watchers\run_wechat_windows_watcher.ps1"
-schtasks /Create /TN "ZteAPI WeChat Watcher" /SC ONLOGON /TR "powershell -NoProfile -ExecutionPolicy Bypass -File `"$watcher`"" /F
+.\run_wechat_windows_watcher.ps1 -InstallStartupTask
 ```
+
+This starts the watcher hidden after the receiving Windows user logs in. To start it hidden immediately:
+
+```powershell
+.\run_wechat_windows_watcher.ps1 -StartHidden
+```
+
+To remove the logon task:
+
+```powershell
+.\run_wechat_windows_watcher.ps1 -UninstallStartupTask
+```
+
+Sub2API user login in the browser cannot and should not start this watcher. The watcher belongs to the receiving WeChat account's Windows machine. Once the scheduled task is installed, it starts with that Windows account, not with each website user.
 
 ## Limitations
 
@@ -106,6 +123,6 @@ This is less stable than Android VMQ or official WeChat Pay:
 
 - It depends on PC WeChat and Windows actually producing receipt notifications.
 - If Windows Focus Assist hides notifications, the watcher may miss them.
+- The OCR source can reduce focus stealing by trying background capture first, but WeChat may render blank when minimized or hardware-accelerated. Keep the receipt chat/window available on a dedicated desktop, spare Windows user session, or small Windows VM for the most stable PC-based setup.
 - If PC sleeps, logs out, or WeChat changes notification format, receipts may not be detected.
 - It should be treated as a practical bridge, not a bank-grade payment callback.
-

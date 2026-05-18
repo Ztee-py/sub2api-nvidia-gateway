@@ -29,20 +29,11 @@
   transition: transform .18s ease, box-shadow .18s ease, background .18s ease;
 }
 
-.zteapi-floating-pay {
-  background: linear-gradient(135deg, #111827 0%, #374151 100%);
-  box-shadow: 0 18px 42px rgba(17, 24, 39, .26), 0 8px 18px rgba(15, 23, 42, .12);
-}
-
 .zteapi-floating-action:hover {
   color: #fff;
   text-decoration: none;
   transform: translateY(-2px);
   box-shadow: 0 22px 46px rgba(181, 48, 32, .42), 0 10px 22px rgba(15, 23, 42, .14);
-}
-
-.zteapi-floating-pay:hover {
-  box-shadow: 0 22px 46px rgba(17, 24, 39, .34), 0 10px 22px rgba(15, 23, 42, .14);
 }
 
 .zteapi-floating-action:focus-visible {
@@ -60,6 +51,41 @@
   display: none;
 }
 
+.zteapi-payment-toast {
+  position: fixed;
+  right: 28px;
+  top: 22px;
+  z-index: 1000;
+  width: min(360px, calc(100vw - 32px));
+  display: grid;
+  gap: 4px;
+  padding: 16px 18px;
+  border: 1px solid rgba(5, 150, 105, .22);
+  border-radius: 8px;
+  color: #064e3b;
+  background: #ecfdf5;
+  box-shadow: 0 18px 42px rgba(15, 23, 42, .16);
+  font-family: "Microsoft YaHei", "PingFang SC", "Noto Sans SC", Arial, sans-serif;
+  transform: translateY(-10px);
+  opacity: 0;
+  transition: transform .2s ease, opacity .2s ease;
+}
+
+.zteapi-payment-toast.is-visible {
+  transform: translateY(0);
+  opacity: 1;
+}
+
+.zteapi-payment-toast strong {
+  font-size: 15px;
+}
+
+.zteapi-payment-toast span,
+.zteapi-payment-toast small {
+  font-size: 13px;
+  line-height: 1.5;
+}
+
 @media (max-width: 720px) {
   .zteapi-floating-actions {
     right: 18px;
@@ -70,6 +96,11 @@
     min-height: 52px;
     padding: 0 16px;
     font-size: 14px;
+  }
+
+  .zteapi-payment-toast {
+    right: 16px;
+    top: 16px;
   }
 }
 

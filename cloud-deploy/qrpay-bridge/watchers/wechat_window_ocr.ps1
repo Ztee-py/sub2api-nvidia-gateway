@@ -1,7 +1,8 @@
 param(
     [string]$OutputImage = "",
     [string]$Language = "zh-Hans-CN",
-    [int]$DelayMilliseconds = 300
+    [int]$DelayMilliseconds = 300,
+    [switch]$NoForeground
 )
 
 $ErrorActionPreference = "Stop"
@@ -22,6 +23,7 @@ using System.Runtime.InteropServices;
 public class QrpayWin32 {
   [DllImport("user32.dll")] public static extern bool GetWindowRect(IntPtr hWnd, out RECT lpRect);
   [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr hWnd);
+  [DllImport("user32.dll")] public static extern bool PrintWindow(IntPtr hWnd, IntPtr hdcBlt, uint nFlags);
   public struct RECT { public int Left; public int Top; public int Right; public int Bottom; }
 }
 "@
@@ -35,14 +37,32 @@ function Await-WinRt($Async, $ResultType) {
     return $task.Result
 }
 
-function Capture-WindowPngBytes($Hwnd) {
+function Capture-WindowPngBytes {
+    param(
+        [IntPtr]$Hwnd,
+        [switch]$UsePrintWindow
+    )
     [QrpayWin32+RECT]$rect = New-Object QrpayWin32+RECT
     [void][QrpayWin32]::GetWindowRect($Hwnd, [ref]$rect)
     $width = [Math]::Max(1, $rect.Right - $rect.Left)
     $height = [Math]::Max(1, $rect.Bottom - $rect.Top)
     $bitmap = New-Object System.Drawing.Bitmap $width, $height
     $graphics = [System.Drawing.Graphics]::FromImage($bitmap)
-    $graphics.CopyFromScreen($rect.Left, $rect.Top, 0, 0, (New-Object System.Drawing.Size $width, $height))
+    if ($UsePrintWindow) {
+        $hdc = $graphics.GetHdc()
+        try {
+            $ok = [QrpayWin32]::PrintWindow($Hwnd, $hdc, 2)
+            if (-not $ok) {
+                throw "PrintWindow returned false."
+            }
+        }
+        finally {
+            $graphics.ReleaseHdc($hdc)
+        }
+    }
+    else {
+        $graphics.CopyFromScreen($rect.Left, $rect.Top, 0, 0, (New-Object System.Drawing.Size $width, $height))
+    }
     $stream = New-Object System.IO.MemoryStream
     $bitmap.Save($stream, [System.Drawing.Imaging.ImageFormat]::Png)
     $graphics.Dispose()
@@ -81,10 +101,31 @@ if ($null -eq $process) {
     throw "Weixin main window not found. Open PC WeChat first."
 }
 
-[void][QrpayWin32]::SetForegroundWindow($process.MainWindowHandle)
-Start-Sleep -Milliseconds $DelayMilliseconds
-$bytes = Capture-WindowPngBytes $process.MainWindowHandle
+$bytes = $null
+$text = ""
+
+try {
+    $bytes = Capture-WindowPngBytes -Hwnd $process.MainWindowHandle -UsePrintWindow
+    $text = Read-OcrText $bytes
+}
+catch {
+    if ($NoForeground) {
+        throw "background WeChat window OCR failed: $($_.Exception.Message)"
+    }
+}
+
+if ([string]::IsNullOrWhiteSpace($text) -and -not $NoForeground) {
+    [void][QrpayWin32]::SetForegroundWindow($process.MainWindowHandle)
+    Start-Sleep -Milliseconds $DelayMilliseconds
+    $bytes = Capture-WindowPngBytes -Hwnd $process.MainWindowHandle
+    $text = Read-OcrText $bytes
+}
+
+if ([string]::IsNullOrWhiteSpace($text) -and $NoForeground) {
+    throw "background WeChat window OCR returned no text. Keep the WeChat receipt window visible, or unset WECHAT_WINDOW_OCR_NO_FOREGROUND to allow foreground fallback."
+}
+
 if ($OutputImage) {
     [System.IO.File]::WriteAllBytes($OutputImage, $bytes)
 }
-Read-OcrText $bytes
+$text

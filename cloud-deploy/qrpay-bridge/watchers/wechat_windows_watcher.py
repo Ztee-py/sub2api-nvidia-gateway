@@ -64,6 +64,13 @@ def env(name: str, default: str = "") -> str:
     return os.environ.get(name, default).strip()
 
 
+def env_flag(name: str, default: bool = False) -> bool:
+    raw = os.environ.get(name)
+    if raw is None:
+        return default
+    return raw.strip().lower() in {"1", "true", "yes", "on"}
+
+
 def now_iso() -> str:
     return datetime.now(timezone.utc).astimezone().isoformat(timespec="seconds")
 
@@ -282,10 +289,17 @@ class StdinSource:
 
 
 class WeChatWindowOcrSource:
-    def __init__(self, script_path: Path, timeout: int, save_screenshot: Path | None = None) -> None:
+    def __init__(
+        self,
+        script_path: Path,
+        timeout: int,
+        save_screenshot: Path | None = None,
+        no_foreground: bool = False,
+    ) -> None:
         self.script_path = script_path
         self.timeout = timeout
         self.save_screenshot = save_screenshot
+        self.no_foreground = no_foreground
 
     def poll(self) -> Iterable[TextEvent]:
         if not self.script_path.exists():
@@ -300,6 +314,8 @@ class WeChatWindowOcrSource:
         ]
         if self.save_screenshot:
             cmd.extend(["-OutputImage", str(self.save_screenshot)])
+        if self.no_foreground:
+            cmd.append("-NoForeground")
         completed = subprocess.run(
             cmd,
             stdout=subprocess.PIPE,
@@ -492,7 +508,7 @@ def build_source(args: argparse.Namespace):
         return NotificationDbSource(Path(args.notification_db), args.max_rows_per_table)
     if args.source == "wechat-window-ocr":
         screenshot = Path(args.ocr_screenshot) if args.ocr_screenshot else None
-        return WeChatWindowOcrSource(Path(args.ocr_script), args.ocr_timeout, screenshot)
+        return WeChatWindowOcrSource(Path(args.ocr_script), args.ocr_timeout, screenshot, args.ocr_no_foreground)
     if args.source == "file-tail":
         if not args.file:
             raise SystemExit("--file is required with --source file-tail")
@@ -511,6 +527,7 @@ def build_args() -> argparse.Namespace:
     parser.add_argument("--ocr-script", default=env("WECHAT_WINDOW_OCR_SCRIPT", str(Path(__file__).with_name("wechat_window_ocr.ps1"))))
     parser.add_argument("--ocr-timeout", type=int, default=int(env("WECHAT_WINDOW_OCR_TIMEOUT_SECONDS", "20")))
     parser.add_argument("--ocr-screenshot", default=env("WECHAT_WINDOW_OCR_SCREENSHOT"))
+    parser.add_argument("--ocr-no-foreground", action="store_true", default=env_flag("WECHAT_WINDOW_OCR_NO_FOREGROUND", False))
     parser.add_argument("--file", default=env("WECHAT_WATCHER_FILE"))
     parser.add_argument("--state-path", default=env("WECHAT_WATCHER_STATE", str(default_state_path())))
     parser.add_argument("--poll-interval", type=int, default=int(env("WECHAT_WATCHER_POLL_INTERVAL", "2")))
