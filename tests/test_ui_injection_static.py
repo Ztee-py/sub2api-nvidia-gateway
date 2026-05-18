@@ -39,7 +39,13 @@ class StaticUiInjectionTests(unittest.TestCase):
         self.assertIn('path === "/payment"', source)
         self.assertIn("zteapiPaymentHidden", source)
         self.assertIn("zteapiFullNavigationBound", source)
-        self.assertIn('"充值/订阅"', source)
+        self.assertIn(r'"\u5145\u503c/\u8ba2\u9605"', source)
+        self.assertIn("SIDEBAR_PAYMENT_SELECTOR", source)
+        self.assertIn("collectSidebarPaymentLinks", source)
+        self.assertIn("handlePaymentNavigationClick", source)
+        self.assertIn('document.addEventListener("click", handlePaymentNavigationClick, true)', source)
+        self.assertIn("forceQrpayPageIfNeeded", source)
+        self.assertIn('window.location.replace(target)', source)
 
     def test_payment_route_is_served_by_qrpay(self):
         caddy = (ROOT / "cloud-deploy" / "Caddyfile").read_text(encoding="utf-8")

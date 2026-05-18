@@ -76,8 +76,19 @@
   }
 
   function linkPath(link) {
+    return elementPath(link);
+  }
+
+  function elementPath(node) {
     try {
-      return new URL(link.getAttribute("href") || "", window.location.origin).pathname;
+      const raw =
+        node.getAttribute("href") ||
+        node.getAttribute("to") ||
+        node.getAttribute("data-href") ||
+        node.getAttribute("data-to") ||
+        node.getAttribute("data-path") ||
+        "";
+      return raw ? new URL(raw, window.location.origin).pathname : "";
     } catch (_) {
       return "";
     }
@@ -95,64 +106,22 @@
     return Boolean(link.closest("aside,nav,.sidebar,.sidebar-nav,.layout-sidebar,[class*='sidebar']"));
   }
 
-  function setPaymentMainLabel(link) {
-    const label =
-      link.querySelector(".sidebar-label") ||
-      link.querySelector("span") ||
-      link;
-    if (label && compactText(label) !== "充值/订阅") {
-      label.textContent = "充值/订阅";
-    }
-  }
-
-  function patchUserPaymentLinks() {
-    if (/^\/admin(?:\/|$)/.test(window.location.pathname || "/")) return;
-    let mainLink = null;
-    document.querySelectorAll("a[href]").forEach((link) => {
-      const path = linkPath(link);
-      const text = compactText(link);
-      const inSidebar = isSidebarLink(link);
-      if (path === "/purchase" || text.includes("充值")) {
-        forceFullNavigation(link, "/purchase");
-        if (inSidebar) {
-          setPaymentMainLabel(link);
-          mainLink = mainLink || link;
-        }
-        return;
-      }
-      if (path === "/subscriptions" || textHasAny(text, ["我的订阅", "订阅", "套餐"])) {
-        if (inSidebar) {
-          if (!mainLink) {
-            forceFullNavigation(link, "/purchase");
-            setPaymentMainLabel(link);
-            mainLink = link;
-          } else {
-            link.style.display = "none";
-            link.dataset.zteapiPaymentHidden = "1";
-          }
-        } else {
-          forceFullNavigation(link, "/subscriptions");
-        }
-        return;
-      }
-      if (path === "/orders" || textHasAny(text, ["我的订单", "订单记录"])) {
-        if (inSidebar) {
-          if (!mainLink) {
-            forceFullNavigation(link, "/purchase");
-            setPaymentMainLabel(link);
-            mainLink = link;
-          } else {
-            link.style.display = "none";
-            link.dataset.zteapiPaymentHidden = "1";
-          }
-        } else {
-          forceFullNavigation(link, "/orders");
-        }
-      }
-    });
-  }
-
   const MAIN_PAYMENT_LABEL = "\u5145\u503c/\u8ba2\u9605";
+  const QRPAY_PAGE_PATHS = ["/purchase", "/payment", "/subscriptions", "/orders"];
+  const SIDEBAR_PAYMENT_SELECTOR = [
+    "a[href]",
+    "button",
+    "[role='button']",
+    "[role='link']",
+    "[data-href]",
+    "[data-to]",
+    "[data-path]",
+    "li",
+    "[class*='sidebar-link']",
+    "[class*='sidebar-item']",
+    "[class*='menu-item']",
+    "[class*='nav-item']"
+  ].join(",");
 
   function setPaymentMainLabel(link) {
     const label =
@@ -194,9 +163,75 @@
     }
   }
 
+  function qrpayTargetForRole(role) {
+    if (role === "plans") return "/subscriptions";
+    if (role === "orders") return "/orders";
+    return "/purchase";
+  }
+
+  function qrpayTargetForPath(path) {
+    if (path === "/subscriptions") return "/subscriptions";
+    if (path === "/orders") return "/orders";
+    return "/purchase";
+  }
+
+  function isQrpayPaymentDocument() {
+    return Boolean(
+      document.querySelector("main.shell #watchStatus") &&
+      document.querySelector("#createRecharge") &&
+      document.querySelector("#ordersTable")
+    );
+  }
+
+  function forceQrpayPageIfNeeded() {
+    const path = window.location.pathname || "/";
+    if (!QRPAY_PAGE_PATHS.includes(path) || /^\/admin(?:\/|$)/.test(path)) return false;
+    if (isQrpayPaymentDocument()) return false;
+
+    const target = qrpayTargetForPath(path);
+    const targetUrl = new URL(target, window.location.origin).href;
+    if (window.location.href === targetUrl) {
+      window.location.reload();
+    } else {
+      window.location.replace(target);
+    }
+    return true;
+  }
+
+  function sidebarPaymentPatchTarget(node) {
+    return (
+      node.closest("a[href],button,[role='button'],[role='link'],[data-href],[data-to],[data-path]") ||
+      node.closest("[class*='sidebar-link'],[class*='sidebar-item'],[class*='menu-item'],[class*='nav-item'],li") ||
+      node
+    );
+  }
+
+  function collectSidebarPaymentLinks() {
+    const seen = new Set();
+    const items = [];
+    document.querySelectorAll(SIDEBAR_PAYMENT_SELECTOR).forEach((node, index) => {
+      if (!isSidebarLink(node)) return;
+      const item = sidebarPaymentPatchTarget(node);
+      if (!item || seen.has(item)) return;
+      const path = elementPath(item) || elementPath(node);
+      const text = compactText(item);
+      const role = paymentLinkRole(path, text);
+      if (!role) return;
+      seen.add(item);
+      if (item.dataset.zteapiPaymentHidden === "1") {
+        item.style.display = "";
+        item.removeAttribute("aria-hidden");
+        item.removeAttribute("tabindex");
+        delete item.dataset.zteapiPaymentHidden;
+      }
+      items.push({ link: item, path, role, index });
+    });
+    return items;
+  }
+
   function patchUserPaymentLinks() {
     if (/^\/admin(?:\/|$)/.test(window.location.pathname || "/")) return;
-    const sidebarLinks = [];
+    const sidebarLinks = collectSidebarPaymentLinks();
 
     document.querySelectorAll("a[href]").forEach((link, index) => {
       const path = linkPath(link);
@@ -205,13 +240,6 @@
       if (!role) return;
 
       if (isSidebarLink(link)) {
-        if (link.dataset.zteapiPaymentHidden === "1") {
-          link.style.display = "";
-          link.removeAttribute("aria-hidden");
-          link.removeAttribute("tabindex");
-          delete link.dataset.zteapiPaymentHidden;
-        }
-        sidebarLinks.push({ link, path, role, index });
         return;
       }
 
@@ -236,6 +264,30 @@
       link.setAttribute("tabindex", "-1");
       link.dataset.zteapiPaymentHidden = "1";
     });
+  }
+
+  function handlePaymentNavigationClick(event) {
+    if (/^\/admin(?:\/|$)/.test(window.location.pathname || "/")) return;
+    if (isQrpayPaymentDocument()) return;
+
+    let node = event.target && event.target.nodeType === 1 ? event.target : event.target && event.target.parentElement;
+    while (node && node !== document.body && node !== document.documentElement) {
+      if (node.matches && node.matches("aside,nav,.sidebar,.sidebar-nav,.layout-sidebar")) break;
+      const canNavigate =
+        node.matches &&
+        node.matches("a[href],button,[role='button'],[role='link'],[data-href],[data-to],[data-path],[class*='sidebar-link'],[class*='sidebar-item'],[class*='menu-item'],[class*='nav-item'],li");
+      if (canNavigate) {
+        const path = elementPath(node);
+        const role = paymentLinkRole(path, compactText(node));
+        if (role && (isSidebarLink(node) || QRPAY_PAGE_PATHS.includes(path))) {
+          event.preventDefault();
+          event.stopImmediatePropagation();
+          window.location.assign(qrpayTargetForRole(role));
+          return;
+        }
+      }
+      node = node.parentElement;
+    }
   }
 
   function createAdminQrpayLink(reference) {
@@ -304,6 +356,7 @@
   }
 
   function refresh() {
+    if (forceQrpayPageIfNeeded()) return;
     const dock = ensureDock();
     if (!dock) return;
     const docs = dock.querySelector(".zteapi-floating-doc");
@@ -340,6 +393,7 @@
 
   wrapHistory("pushState");
   wrapHistory("replaceState");
+  document.addEventListener("click", handlePaymentNavigationClick, true);
   window.addEventListener("popstate", refresh);
   window.addEventListener("pageshow", scheduleRefresh);
   window.addEventListener("focus", scheduleRefresh);
