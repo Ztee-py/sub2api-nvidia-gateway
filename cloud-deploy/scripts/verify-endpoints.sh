@@ -106,6 +106,37 @@ payload = {
     "stream": True,
     "max_output_tokens": 24,
 }
+req = urllib.request.Request(
+    f"{base_url}/v1/responses",
+    data=json.dumps(payload).encode("utf-8"),
+    headers={
+        "Authorization": f"Bearer {key}",
+        "Content-Type": "application/json",
+        "Accept": "text/event-stream",
+    },
+    method="POST",
+)
+with urllib.request.urlopen(req, timeout=180) as resp:
+    content_type = resp.headers.get("Content-Type", "")
+    raw = resp.read().decode("utf-8", errors="replace")
+
+summary = {
+    "content_type": content_type,
+    "bytes": len(raw.encode("utf-8")),
+    "has_expected_marker": expected in raw,
+    "has_response_completed": "response.completed" in raw,
+    "preview": raw[:500],
+}
+print(json.dumps(summary, ensure_ascii=False, indent=2))
+
+if "text/event-stream" not in content_type.lower():
+    raise SystemExit(f"Expected text/event-stream, got {content_type!r}.")
+if expected not in raw:
+    raise SystemExit(f"Expected marker {expected!r} not found in Responses stream.")
+if "response.completed" not in raw:
+    raise SystemExit("Responses stream ended without response.completed.")
+PY
+}
 
 run_codex_model_guard_test() {
   local label="$1"
@@ -184,37 +215,6 @@ SQL
       exit 1
     fi
   fi
-}
-req = urllib.request.Request(
-    f"{base_url}/v1/responses",
-    data=json.dumps(payload).encode("utf-8"),
-    headers={
-        "Authorization": f"Bearer {key}",
-        "Content-Type": "application/json",
-        "Accept": "text/event-stream",
-    },
-    method="POST",
-)
-with urllib.request.urlopen(req, timeout=180) as resp:
-    content_type = resp.headers.get("Content-Type", "")
-    raw = resp.read().decode("utf-8", errors="replace")
-
-summary = {
-    "content_type": content_type,
-    "bytes": len(raw.encode("utf-8")),
-    "has_expected_marker": expected in raw,
-    "has_response_completed": "response.completed" in raw,
-    "preview": raw[:500],
-}
-print(json.dumps(summary, ensure_ascii=False, indent=2))
-
-if "text/event-stream" not in content_type.lower():
-    raise SystemExit(f"Expected text/event-stream, got {content_type!r}.")
-if expected not in raw:
-    raise SystemExit(f"Expected marker {expected!r} not found in Responses stream.")
-if "response.completed" not in raw:
-    raise SystemExit("Responses stream ended without response.completed.")
-PY
 }
 
 if [[ -n "${NVIDIA_TEST_KEY}" ]]; then
