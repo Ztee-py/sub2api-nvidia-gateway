@@ -83,8 +83,15 @@ for path in "${optional_paths[@]}"; do
   fi
 done
 
-tar czf "${tmp_files}" --ignore-failed-read "${tar_args[@]}"
+tar_status=0
+tar czf "${tmp_files}" --ignore-failed-read --warning=no-file-changed "${tar_args[@]}" || tar_status=$?
+if [[ "${tar_status}" -gt 1 ]]; then
+  exit "${tar_status}"
+fi
 tar tzf "${tmp_files}" >/dev/null
+if [[ "${tar_status}" -eq 1 ]]; then
+  echo "tar finished with warnings while reading live data; archive validation passed." >&2
+fi
 mv "${tmp_files}" "${files_backup}"
 
 find backups -type f -name 'sub2api-*' -mtime +"${BACKUP_RETENTION_DAYS:-7}" -delete
