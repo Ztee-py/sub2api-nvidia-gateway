@@ -53,9 +53,9 @@ if (-not $SkipServer) {
     Write-Host "ssh $ServerUser@$ServerHost `"$remoteCommand`""
     Write-Host ""
     if ($OpenServerLogin) {
-        Write-Host "Opening an interactive SSH login. After login, run:"
+        Write-Host "Opening SSH. After you enter the password, the deploy command will run automatically:"
         Write-Host $remoteCommand
-        ssh "$ServerUser@$ServerHost"
+        ssh "$ServerUser@$ServerHost" "$remoteCommand"
     } else {
         Write-Host "Add -OpenServerLogin to open the SSH login prompt from this script."
     }
