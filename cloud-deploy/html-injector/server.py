@@ -1,6 +1,9 @@
 #!/usr/bin/env python3
+from __future__ import annotations
+
 import os
 import sys
+import json
 import urllib.error
 import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -9,8 +12,10 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 UPSTREAM_URL = os.environ.get("UPSTREAM_URL", "http://sub2api:8080").rstrip("/")
 PORT = int(os.environ.get("PORT", "8090"))
 BIND_HOST = os.environ.get("BIND_HOST", "0.0.0.0")
-TIMEOUT_SECONDS = float(os.environ.get("UPSTREAM_TIMEOUT_SECONDS", "30"))
+TIMEOUT_SECONDS = float(os.environ.get("UPSTREAM_TIMEOUT_SECONDS", "900"))
 HEALTH_PATH = os.environ.get("HEALTH_PATH", "/__html_injector_health")
+STRIP_RESPONSES_IMAGE_TOOL = os.environ.get("STRIP_RESPONSES_IMAGE_TOOL", "true").lower() not in {"0", "false", "no", "off"}
+STREAM_CHUNK_SIZE = int(os.environ.get("UPSTREAM_STREAM_CHUNK_SIZE", "65536"))
 
 HOP_BY_HOP_HEADERS = {
     "connection",
@@ -25,6 +30,7 @@ HOP_BY_HOP_HEADERS = {
 
 HEAD_LINK = '<link rel="stylesheet" href="/zteapi-floating-doc.css" data-zteapi-floating-doc>'
 BODY_SCRIPT = '<script defer src="/zteapi-floating-doc.js" data-zteapi-floating-doc></script>'
+IMAGE_TOOL_TYPES = {"image_generation", "image_generation_call"}
 
 
 def inject_assets(body: bytes) -> bytes:
@@ -49,6 +55,51 @@ def inject_assets(body: bytes) -> bytes:
         html += BODY_SCRIPT
 
     return html.encode("utf-8")
+
+
+def should_sanitize_responses_request(method: str, path: str, content_type: str) -> bool:
+    if not STRIP_RESPONSES_IMAGE_TOOL or method.upper() != "POST":
+        return False
+    request_path = path.split("?", 1)[0]
+    return request_path == "/v1/responses" and "json" in content_type.lower()
+
+
+def strip_responses_image_generation_tool(body: bytes) -> tuple[bytes, bool]:
+    try:
+        payload = json.loads(body.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        return body, False
+    if not isinstance(payload, dict):
+        return body, False
+
+    changed = False
+    tools = payload.get("tools")
+    if isinstance(tools, list):
+        kept_tools = []
+        for tool in tools:
+            if isinstance(tool, dict) and str(tool.get("type", "")).lower() in IMAGE_TOOL_TYPES:
+                changed = True
+                continue
+            kept_tools.append(tool)
+        if changed:
+            if kept_tools:
+                payload["tools"] = kept_tools
+            else:
+                payload.pop("tools", None)
+
+    tool_choice = payload.get("tool_choice")
+    remove_tool_choice = False
+    if isinstance(tool_choice, str) and tool_choice.lower() in IMAGE_TOOL_TYPES:
+        remove_tool_choice = True
+    elif isinstance(tool_choice, dict) and str(tool_choice.get("type", "")).lower() in IMAGE_TOOL_TYPES:
+        remove_tool_choice = True
+    if remove_tool_choice:
+        payload.pop("tool_choice", None)
+        changed = True
+
+    if not changed:
+        return body, False
+    return json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8"), True
 
 
 class ProxyHandler(BaseHTTPRequestHandler):
@@ -100,6 +151,11 @@ class ProxyHandler(BaseHTTPRequestHandler):
         if self.command in {"POST", "PUT", "PATCH", "DELETE"}:
             length = int(self.headers.get("Content-Length") or "0")
             body = self.rfile.read(length) if length > 0 else None
+            if body and should_sanitize_responses_request(self.command, self.path, self.headers.get("Content-Type", "")):
+                sanitized_body, changed = strip_responses_image_generation_tool(body)
+                if changed:
+                    self.log_message("stripped unsupported Responses image generation tool declaration")
+                    body = sanitized_body
 
         headers = {}
         for key, value in self.headers.items():
@@ -117,6 +173,10 @@ class ProxyHandler(BaseHTTPRequestHandler):
                 response_body = b"" if head_only else resp.read()
                 response_headers = resp.headers
                 content_type = response_headers.get("Content-Type", "")
+
+                if not head_only and "text/event-stream" in content_type.lower():
+                    self._send_stream(status, response_headers, resp)
+                    return
 
                 if not head_only and status == 200 and "text/html" in content_type.lower():
                     response_body = inject_assets(response_body)
@@ -145,6 +205,23 @@ class ProxyHandler(BaseHTTPRequestHandler):
         self.end_headers()
         if not head_only:
             self.wfile.write(body)
+
+    def _send_stream(self, status, response_headers, resp):
+        self.send_response(status)
+        for key, value in response_headers.items():
+            lower = key.lower()
+            if lower in HOP_BY_HOP_HEADERS or lower in {"content-length", "content-encoding"}:
+                continue
+            self.send_header(key, value)
+        self.send_header("Cache-Control", "no-cache")
+        self.end_headers()
+        self.close_connection = True
+        while True:
+            chunk = resp.read(STREAM_CHUNK_SIZE)
+            if not chunk:
+                break
+            self.wfile.write(chunk)
+            self.wfile.flush()
 
 
 if __name__ == "__main__":
