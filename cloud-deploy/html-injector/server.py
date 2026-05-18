@@ -64,6 +64,10 @@ def should_sanitize_responses_request(method: str, path: str, content_type: str)
     return request_path == "/v1/responses" and "json" in content_type.lower()
 
 
+def is_event_stream_response(content_type: str) -> bool:
+    return "text/event-stream" in content_type.lower()
+
+
 def strip_responses_image_generation_tool(body: bytes) -> tuple[bytes, bool]:
     try:
         payload = json.loads(body.decode("utf-8"))
@@ -170,13 +174,14 @@ class ProxyHandler(BaseHTTPRequestHandler):
         try:
             with urllib.request.urlopen(req, timeout=TIMEOUT_SECONDS) as resp:
                 status = resp.getcode()
-                response_body = b"" if head_only else resp.read()
                 response_headers = resp.headers
                 content_type = response_headers.get("Content-Type", "")
 
-                if not head_only and "text/event-stream" in content_type.lower():
+                if not head_only and is_event_stream_response(content_type):
                     self._send_stream(status, response_headers, resp)
                     return
+
+                response_body = b"" if head_only else resp.read()
 
                 if not head_only and status == 200 and "text/html" in content_type.lower():
                     response_body = inject_assets(response_body)

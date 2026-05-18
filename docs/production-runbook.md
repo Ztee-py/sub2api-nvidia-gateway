@@ -34,6 +34,7 @@ The script verifies:
 
 - NVIDIA group calls through `/v1/chat/completions`.
 - GPT OAuth group calls through `/v1/chat/completions`.
+- `/v1/responses` streaming completes with a terminal `response.completed` event.
 - New `usage_logs` rows appear with token totals.
 
 Expected markers:

@@ -11,8 +11,9 @@ fi
 mkdir -p data postgres_data redis_data adapter_data backups caddy_data caddy_config
 
 docker compose pull
-docker compose build nvidia-adapter
-docker compose up -d
+docker compose build nvidia-adapter html-injector qrpay-bridge
+docker compose up -d --remove-orphans
+docker compose restart caddy
 
 echo
 docker compose ps

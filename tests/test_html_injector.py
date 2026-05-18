@@ -1,7 +1,9 @@
 import importlib.util
+import io
 import json
 import pathlib
 import unittest
+from unittest.mock import patch
 
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
@@ -73,6 +75,71 @@ class ResponsesRequestSanitizerTests(unittest.TestCase):
                 "POST", "/v1/responses", "text/plain"
             )
         )
+
+
+class StreamProxyTests(unittest.TestCase):
+    def test_event_stream_detection_ignores_charset_case(self):
+        self.assertTrue(html_injector.is_event_stream_response("Text/Event-Stream; charset=utf-8"))
+        self.assertFalse(html_injector.is_event_stream_response("application/json"))
+
+    def test_proxy_streams_event_stream_without_prebuffering(self):
+        class FakeStreamResponse:
+            def __init__(self):
+                self.headers = {"Content-Type": "text/event-stream; charset=utf-8"}
+                self.chunks = [
+                    b"event: response.output_text.delta\n",
+                    b'data: {"type":"response.output_text.delta","delta":"OK"}\n\n',
+                    b"event: response.completed\n",
+                    b'data: {"type":"response.completed"}\n\n',
+                ]
+                self.full_read_called = False
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, tb):
+                return False
+
+            def getcode(self):
+                return 200
+
+            def read(self, size=-1):
+                if size == -1:
+                    self.full_read_called = True
+                    return b""
+                if self.chunks:
+                    return self.chunks.pop(0)
+                return b""
+
+        class DummyHandler(html_injector.ProxyHandler):
+            def __init__(self):
+                self.command = "GET"
+                self.path = "/v1/responses"
+                self.headers = {}
+                self.wfile = io.BytesIO()
+                self.statuses = []
+                self.sent_headers = []
+                self.close_connection = False
+
+            def send_response(self, status):
+                self.statuses.append(status)
+
+            def send_header(self, key, value):
+                self.sent_headers.append((key, value))
+
+            def end_headers(self):
+                pass
+
+        response = FakeStreamResponse()
+        handler = DummyHandler()
+
+        with patch.object(html_injector.urllib.request, "urlopen", return_value=response):
+            handler._proxy()
+
+        body = handler.wfile.getvalue()
+        self.assertEqual(handler.statuses, [200])
+        self.assertFalse(response.full_read_called)
+        self.assertIn(b"response.completed", body)
 
 
 if __name__ == "__main__":

@@ -86,12 +86,65 @@ PY
   rm -f "${tmp_response}"
 }
 
+run_responses_stream_test() {
+  local label="$1"
+  local key="$2"
+  local model="$3"
+  local expected="$4"
+
+  echo "== ${label} Responses stream =="
+  python3 - "${BASE_URL}" "${key}" "${model}" "${expected}" <<'PY'
+import json
+import sys
+import urllib.request
+
+base_url, key, model, expected = sys.argv[1:5]
+payload = {
+    "model": model,
+    "input": f"Reply exactly: {expected}.",
+    "stream": True,
+    "max_output_tokens": 24,
+}
+req = urllib.request.Request(
+    f"{base_url}/v1/responses",
+    data=json.dumps(payload).encode("utf-8"),
+    headers={
+        "Authorization": f"Bearer {key}",
+        "Content-Type": "application/json",
+        "Accept": "text/event-stream",
+    },
+    method="POST",
+)
+with urllib.request.urlopen(req, timeout=180) as resp:
+    content_type = resp.headers.get("Content-Type", "")
+    raw = resp.read().decode("utf-8", errors="replace")
+
+summary = {
+    "content_type": content_type,
+    "bytes": len(raw.encode("utf-8")),
+    "has_expected_marker": expected in raw,
+    "has_response_completed": "response.completed" in raw,
+    "preview": raw[:500],
+}
+print(json.dumps(summary, ensure_ascii=False, indent=2))
+
+if "text/event-stream" not in content_type.lower():
+    raise SystemExit(f"Expected text/event-stream, got {content_type!r}.")
+if expected not in raw:
+    raise SystemExit(f"Expected marker {expected!r} not found in Responses stream.")
+if "response.completed" not in raw:
+    raise SystemExit("Responses stream ended without response.completed.")
+PY
+}
+
 if [[ -n "${NVIDIA_TEST_KEY}" ]]; then
   run_chat_test "NVIDIA adapter via Sub2API" "${NVIDIA_TEST_KEY}" "${NVIDIA_TEST_MODEL}" "NVIDIA_VERIFY_OK"
+  run_responses_stream_test "NVIDIA adapter via Sub2API" "${NVIDIA_TEST_KEY}" "${NVIDIA_TEST_MODEL}" "NVIDIA_RESPONSES_STREAM_OK"
 fi
 
 if [[ -n "${GPT_TEST_KEY}" ]]; then
   run_chat_test "OpenAI GPT OAuth via Sub2API" "${GPT_TEST_KEY}" "${GPT_TEST_MODEL}" "GPT_VERIFY_OK"
+  run_responses_stream_test "OpenAI GPT OAuth via Sub2API" "${GPT_TEST_KEY}" "${GPT_TEST_MODEL}" "GPT_RESPONSES_STREAM_OK"
 fi
 
 if [[ "${VERIFY_USAGE_LOGS}" == "true" ]]; then
