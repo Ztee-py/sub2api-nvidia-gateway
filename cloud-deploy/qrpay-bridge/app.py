@@ -8,7 +8,7 @@ import string
 import urllib.error
 import urllib.request
 from datetime import datetime, timedelta, timezone
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
 from typing import Any
 
 import psycopg
@@ -106,6 +106,8 @@ class Settings:
 settings = Settings()
 app = FastAPI(title="ZteAPI QR Pay Bridge")
 
+QR_PAYMENT_METHODS = {"alipay_code", "wechat_code"}
+
 
 def db_dsn() -> str:
     return (
@@ -148,6 +150,20 @@ def decimal_to_float(value: Any) -> float:
     if value is None:
         return 0.0
     return float(value)
+
+
+def parse_money_or_400(value: Any, label: str = "amount") -> Decimal:
+    try:
+        return money_to_decimal(value)
+    except (InvalidOperation, TypeError, ValueError) as exc:
+        raise HTTPException(400, f"invalid {label}") from exc
+
+
+def parse_int_or_400(value: Any, label: str) -> int:
+    try:
+        return int(value)
+    except (TypeError, ValueError) as exc:
+        raise HTTPException(400, f"{label} must be an integer") from exc
 
 
 def require_shared_secret(secret: str | None, expected: str, label: str) -> None:
@@ -540,8 +556,9 @@ def expire_pending_orders(conn) -> None:
            SET status='EXPIRED', updated_at=NOW()
          WHERE status='PENDING'
            AND expires_at < NOW()
-           AND payment_type IN ('alipay_code', 'wechat_code')
-        """
+           AND payment_type = ANY(%s)
+        """,
+        (list(QR_PAYMENT_METHODS),),
     )
 
 
@@ -648,11 +665,11 @@ def list_user_orders(conn, user_id: int, limit: int = 30) -> list[dict[str, Any]
         SELECT *
           FROM payment_orders
          WHERE user_id=%s
-           AND payment_type IN ('alipay_code', 'wechat_code')
+           AND payment_type = ANY(%s)
          ORDER BY id DESC
          LIMIT %s
         """,
-        (user_id, limit),
+        (user_id, list(QR_PAYMENT_METHODS), limit),
     ).fetchall()
     return [public_order_payload(row) for row in rows]
 
@@ -664,8 +681,8 @@ def list_admin_qr_orders(
     payment_type: str = "",
     keyword: str = "",
 ) -> list[dict[str, Any]]:
-    where = ["payment_type IN ('alipay_code', 'wechat_code')"]
-    params: list[Any] = []
+    where = ["payment_type = ANY(%s)"]
+    params: list[Any] = [list(QR_PAYMENT_METHODS)]
     if status:
         where.append("status=%s")
         params.append(status)
@@ -703,29 +720,31 @@ def create_payment_order(conn, req: dict[str, Any], user: dict[str, Any], reques
           FROM payment_orders
          WHERE user_id=%s
            AND status='PENDING'
-           AND payment_type IN ('alipay_code', 'wechat_code')
+           AND payment_type = ANY(%s)
            AND expires_at > NOW()
         """,
-        (user["id"],),
+        (user["id"], list(QR_PAYMENT_METHODS)),
     ).fetchone()["c"]
     if pending >= settings.max_pending_orders:
         raise HTTPException(429, f"too many pending orders, max={settings.max_pending_orders}")
 
     plan = None
     plan_id = None
-    amount = money_to_decimal(req.get("amount") or "0")
+    amount = parse_money_or_400(req.get("amount") or "0")
     subscription_group_id = None
     subscription_days = None
     if order_type == "subscription":
-        plan_id = int(req.get("plan_id") or 0)
+        plan_id = parse_int_or_400(req.get("plan_id") or 0, "plan_id")
         if plan_id <= 0:
             raise HTTPException(400, "subscription order requires plan_id")
         plan = get_plan(conn, plan_id)
         if not plan or plan.get("group_status") != "active" or plan.get("subscription_type") not in {"standard", "premium", "enterprise"}:
             raise HTTPException(404, "subscription plan is not available")
-        amount = money_to_decimal(plan["price"])
+        amount = parse_money_or_400(plan["price"])
         subscription_group_id = plan["group_id"]
         subscription_days = compute_validity_days(plan["validity_days"], plan["validity_unit"])
+        if subscription_days <= 0:
+            raise HTTPException(400, "subscription plan validity must be positive")
     else:
         if amount < settings.min_amount or amount > settings.max_amount:
             raise HTTPException(400, f"amount out of range: {settings.min_amount} - {settings.max_amount}")
@@ -893,6 +912,9 @@ def confirm_payment(
     raw_payload: dict[str, Any],
 ) -> dict[str, Any]:
     out_trade_no = safe_order_no(out_trade_no)
+    if provider not in QR_PAYMENT_METHODS and provider != "manual":
+        raise HTTPException(400, f"unsupported payment provider: {provider}")
+    paid_amount_decimal = parse_money_or_400(paid_amount, "paid_amount")
     order = select_order_for_update(conn, out_trade_no)
     if not order:
         raise HTTPException(404, "order not found")
@@ -903,8 +925,16 @@ def confirm_payment(
     if order["expires_at"] and order["expires_at"] < now_utc() - timedelta(minutes=5):
         audit(conn, order["id"], "PAYMENT_AFTER_EXPIRY", {"provider": provider, "trade_no": provider_trade_no})
         raise HTTPException(409, "order is expired")
-    if not is_amount_match(order["pay_amount"], paid_amount):
-        audit(conn, order["id"], "PAYMENT_AMOUNT_MISMATCH", {"expected": str(order["pay_amount"]), "paid": str(paid_amount)})
+    if provider != "manual" and order["payment_type"] != provider:
+        audit(
+            conn,
+            order["id"],
+            "PAYMENT_PROVIDER_MISMATCH",
+            {"expected": order["payment_type"], "actual": provider, "trade_no": provider_trade_no},
+        )
+        raise HTTPException(400, "payment provider mismatch")
+    if not is_amount_match(order["pay_amount"], paid_amount_decimal):
+        audit(conn, order["id"], "PAYMENT_AMOUNT_MISMATCH", {"expected": str(order["pay_amount"]), "paid": str(paid_amount_decimal)})
         raise HTTPException(400, "payment amount mismatch")
 
     receipt = conn.execute(
@@ -914,11 +944,14 @@ def confirm_payment(
         ON CONFLICT (provider, provider_trade_no) DO NOTHING
         RETURNING id
         """,
-        (provider, provider_trade_no, order["id"], out_trade_no, money_to_decimal(paid_amount), payer or "", Jsonb(raw_payload)),
+        (provider, provider_trade_no, order["id"], out_trade_no, paid_amount_decimal, payer or "", Jsonb(raw_payload)),
     ).fetchone()
     if not receipt:
         refreshed = conn.execute("SELECT * FROM payment_orders WHERE id=%s", (order["id"],)).fetchone()
-        return public_order_payload(refreshed)
+        if refreshed and refreshed["status"] == "COMPLETED":
+            return public_order_payload(refreshed)
+        audit(conn, order["id"], "DUPLICATE_PAYMENT_RECEIPT", {"provider": provider, "trade_no": provider_trade_no})
+        raise HTTPException(409, "duplicate payment receipt")
 
     conn.execute(
         """
@@ -926,11 +959,11 @@ def confirm_payment(
            SET status='PAID', payment_trade_no=%s, pay_amount=%s, paid_at=NOW(), updated_at=NOW()
          WHERE id=%s
         """,
-        (provider_trade_no, money_to_decimal(paid_amount), order["id"]),
+        (provider_trade_no, paid_amount_decimal, order["id"]),
     )
     order["status"] = "PAID"
     order["payment_trade_no"] = provider_trade_no
-    order["pay_amount"] = money_to_decimal(paid_amount)
+    order["pay_amount"] = paid_amount_decimal
     audit(conn, order["id"], "ORDER_PAID", {"provider": provider, "trade_no": provider_trade_no, "payer": payer or ""})
 
     if order["order_type"] == "subscription":
@@ -1211,6 +1244,7 @@ async def watch_wechat_receipt(request: Request, x_qrpay_secret: str | None = He
     body = await request.json()
     out_trade_no = (body.get("out_trade_no") or body.get("order_no") or "").strip()
     amount = body.get("amount") or body.get("paid_amount")
+    paid_amount = parse_money_or_400(amount, "amount")
     provider_trade_no = body.get("transaction_id") or body.get("trade_no") or f"wechat-{now_utc().timestamp()}"
     payer = body.get("payer") or body.get("openid") or ""
     with db_conn() as conn:
@@ -1225,12 +1259,12 @@ async def watch_wechat_receipt(request: Request, x_qrpay_secret: str | None = He
                    AND pay_amount=%s
                  ORDER BY id ASC
                 """,
-                (money_to_decimal(amount),),
+                (paid_amount,),
             ).fetchall()
             if len(matches) != 1:
                 raise HTTPException(409, f"wechat amount matched {len(matches)} pending orders")
             out_trade_no = matches[0]["out_trade_no"]
-        result = confirm_payment(conn, out_trade_no, "wechat_code", str(provider_trade_no), amount, payer, body)
+        result = confirm_payment(conn, out_trade_no, "wechat_code", str(provider_trade_no), paid_amount, payer, body)
         record_monitor_heartbeat(
             conn,
             "wechat-receipt",
@@ -1262,7 +1296,15 @@ async def vmq_webhook(request: Request) -> Response:
         return Response("error_sign", status_code=400)
     provider = "wechat_code" if pay_type == "1" else "alipay_code" if pay_type == "2" else "vmq"
     with db_conn() as conn:
-        confirm_payment(conn, pay_id, provider, str(data.get("transactionId") or pay_id), price, str(data.get("payer") or ""), data)
+        confirm_payment(
+            conn,
+            pay_id,
+            provider,
+            str(data.get("transactionId") or pay_id),
+            really_price,
+            str(data.get("payer") or ""),
+            data,
+        )
         conn.commit()
     return Response("success", media_type="text/plain")
 
@@ -1272,10 +1314,11 @@ async def admin_confirm(out_trade_no: str, request: Request, x_qrpay_secret: str
     require_shared_secret(x_qrpay_secret, settings.admin_secret, "admin")
     body = await request.json()
     amount = body.get("amount") or body.get("paid_amount")
+    paid_amount = parse_money_or_400(amount, "amount")
     provider = body.get("provider") or "manual"
     provider_trade_no = body.get("trade_no") or f"manual-{out_trade_no}"
     with db_conn() as conn:
-        result = confirm_payment(conn, out_trade_no, provider, provider_trade_no, amount, body.get("payer") or "", body)
+        result = confirm_payment(conn, out_trade_no, provider, provider_trade_no, paid_amount, body.get("payer") or "", body)
         conn.commit()
     return json_response(result)
 
@@ -1472,8 +1515,13 @@ INDEX_HTML = """<!doctype html>
   <script>
     const state = { config:null, watcherStatus:null, amount:null, method:null, orders:[], payPollTimer:null, redirectTimer:null };
     function token() {
+      const cookies = Object.fromEntries(document.cookie.split(';').map(v => v.trim()).filter(Boolean).map(v => {
+        const i = v.indexOf('=');
+        return i === -1 ? [decodeURIComponent(v), ''] : [decodeURIComponent(v.slice(0, i)), decodeURIComponent(v.slice(i + 1))];
+      }));
       const stores = [localStorage, sessionStorage];
-      const preferred = ['token','access_token','auth_token','jwt','sub2api_token'];
+      const preferred = ['token','access_token','auth_token','jwt','sub2api_token','accessToken','authToken'];
+      for (const k of preferred) if (cookies[k]) return cookies[k].replace(/^Bearer\\s+/i,'');
       for (const s of stores) for (const k of preferred) { const v = s.getItem(k); if (v) return v.replace(/^Bearer\\s+/i,''); }
       for (const s of stores) for (let i=0;i<s.length;i++) { const v = s.getItem(s.key(i)); if (v && /^eyJ/.test(v)) return v; }
       return '';
@@ -1692,8 +1740,13 @@ ADMIN_HTML = """<!doctype html>
   </main>
   <script>
     function token() {
+      const cookies = Object.fromEntries(document.cookie.split(';').map(v => v.trim()).filter(Boolean).map(v => {
+        const i = v.indexOf('=');
+        return i === -1 ? [decodeURIComponent(v), ''] : [decodeURIComponent(v.slice(0, i)), decodeURIComponent(v.slice(i + 1))];
+      }));
       const stores = [localStorage, sessionStorage];
-      const preferred = ['auth_token','token','access_token','jwt','sub2api_token'];
+      const preferred = ['auth_token','token','access_token','jwt','sub2api_token','accessToken','authToken'];
+      for (const k of preferred) if (cookies[k]) return cookies[k].replace(/^Bearer\\s+/i,'');
       for (const s of stores) for (const k of preferred) { const v = s.getItem(k); if (v) return v.replace(/^Bearer\\s+/i,''); }
       for (const s of stores) for (let i=0;i<s.length;i++) { const v = s.getItem(s.key(i)); if (v && /^eyJ/.test(v)) return v; }
       return '';

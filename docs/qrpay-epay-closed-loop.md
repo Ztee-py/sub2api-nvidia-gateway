@@ -224,6 +224,66 @@ curl "https://YOUR_DOMAIN/qrpay/api/watch/public-status"
 
 When no heartbeat arrives within `QRPAY_WATCHER_STALE_AFTER_SECONDS`, the monitor moves through `PENDING` and then `DOWN`, following the Uptime Kuma retry model.
 
+## Closed-Loop Test Checklist
+
+Use small amounts first and keep one test user separate from real customers.
+
+1. Run preflight:
+
+   ```bash
+   cd /opt/sub2api-nvidia/cloud-deploy
+   ./scripts/payment-preflight.sh
+   ```
+
+2. Confirm the user-facing center loads after login:
+
+   ```text
+   https://YOUR_DOMAIN/payment
+   https://YOUR_DOMAIN/subscriptions
+   https://YOUR_DOMAIN/orders
+   ```
+
+3. Send a watcher heartbeat before a real payment. The payment page should show the watcher as healthy:
+
+   ```bash
+   curl -X POST "https://YOUR_DOMAIN/qrpay/api/watch/heartbeat" \
+     -H "Content-Type: application/json" \
+     -H "X-Qrpay-Secret: ${QRPAY_WATCHER_SECRET}" \
+     -d '{"name":"wechat-decrypt","kind":"wechat","ok":true,"msg":"test heartbeat"}'
+   ```
+
+4. Balance recharge test:
+
+   - Create a ¥1 order from `/payment`.
+   - Pay exactly the shown `pay_amount`.
+   - Verify the page changes to `COMPLETED`, the dashboard shows the success notice, and the user balance increased by the order `amount`.
+
+5. Subscription test:
+
+   - Make sure at least one `subscription_plans` row is `for_sale=true`.
+   - Create a subscription order from `/subscriptions`.
+   - Pay exactly the shown `pay_amount`.
+   - Verify a matching `user_subscriptions` row is created or extended and the order is `COMPLETED`.
+
+6. Idempotency and safety tests:
+
+   - Re-send the same watcher receipt or VMQ callback once; it should not credit balance or extend subscription twice.
+   - Send the same receipt with the wrong amount; it should be rejected and logged as an amount mismatch.
+   - Send a WeChat receipt without `out_trade_no` only when the amount is unique among pending WeChat orders.
+
+7. Inspect the database:
+
+   ```bash
+   docker compose exec -T postgres psql -U "${POSTGRES_USER:-sub2api}" "${POSTGRES_DB:-sub2api}" -P pager=off -c \
+     "select id,out_trade_no,user_id,payment_type,order_type,amount,pay_amount,status,paid_at,completed_at from payment_orders where payment_type in ('alipay_code','wechat_code') order by id desc limit 10;"
+
+   docker compose exec -T postgres psql -U "${POSTGRES_USER:-sub2api}" "${POSTGRES_DB:-sub2api}" -P pager=off -c \
+     "select id,provider,provider_trade_no,out_trade_no,amount,received_at from qrpay_bridge_receipts order by id desc limit 10;"
+
+   docker compose exec -T postgres psql -U "${POSTGRES_USER:-sub2api}" "${POSTGRES_DB:-sub2api}" -P pager=off -c \
+     "select id,user_id,group_id,status,starts_at,expires_at,notes from user_subscriptions order by id desc limit 10;"
+   ```
+
 ## Local Safety And Backup
 
 The normal backup script now includes:

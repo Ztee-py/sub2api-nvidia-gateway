@@ -13,7 +13,16 @@ docker compose exec -T postgres psql -v ON_ERROR_STOP=1 -U "${db_user}" "${db_na
 select table_name
 from information_schema.tables
 where table_schema = 'public'
-  and table_name in ('payment_orders', 'payment_provider_instances', 'payment_audit_logs')
+  and table_name in (
+    'payment_orders',
+    'payment_provider_instances',
+    'payment_audit_logs',
+    'subscription_plans',
+    'user_subscriptions',
+    'qrpay_bridge_receipts',
+    'qrpay_bridge_monitors',
+    'qrpay_bridge_heartbeats'
+  )
 order by table_name;
 
 select key, value
@@ -55,11 +64,45 @@ select status, count(*) as orders, coalesce(sum(amount), 0) as total_amount
 from payment_orders
 group by status
 order by status;
+
+select payment_type, status, count(*) as orders, coalesce(sum(amount), 0) as total_amount
+from payment_orders
+where payment_type in ('alipay_code', 'wechat_code')
+group by payment_type, status
+order by payment_type, status;
+
+select id, out_trade_no, user_email, payment_type, order_type, amount, pay_amount, status, created_at, paid_at, completed_at
+from payment_orders
+where payment_type in ('alipay_code', 'wechat_code')
+order by id desc
+limit 10;
+
+select id, provider, provider_trade_no, out_trade_no, amount, payer, received_at
+from qrpay_bridge_receipts
+order by id desc
+limit 10;
+
+select id, name, group_id, price, validity_days, validity_unit, for_sale, sort_order
+from subscription_plans
+where for_sale = true
+order by sort_order, id
+limit 20;
+
+select name, kind, status, retries, last_heartbeat_at, last_message, updated_at
+from qrpay_bridge_monitors
+order by name;
 SQL
 
 echo
 echo "== Public settings endpoint =="
 curl -fsS "https://${domain}/api/v1/settings/public"
+echo
+
+echo
+echo "== QRPay public endpoints =="
+curl -fsS "https://${domain}/qrpay/health"
+echo
+curl -fsS "https://${domain}/qrpay/api/watch/public-status"
 echo
 
 if [[ -n "${PAYMENT_TEST_TOKEN:-}" ]]; then

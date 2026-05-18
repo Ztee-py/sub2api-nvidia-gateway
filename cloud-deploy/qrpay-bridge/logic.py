@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import hmac
 import re
 from decimal import Decimal, ROUND_HALF_UP
 from typing import Iterable
@@ -71,7 +72,7 @@ def build_vmq_sign(pay_id: str, pay_type: str, price: str, really_price: str, ke
 
 def verify_vmq_sign(pay_id: str, pay_type: str, price: str, really_price: str, key: str, sign: str) -> bool:
     expected = build_vmq_sign(pay_id, pay_type, price, really_price, key)
-    return expected.lower() == (sign or "").lower()
+    return bool(sign) and hmac.compare_digest(expected.lower(), sign.lower())
 
 
 def next_notify_interval_minutes(attempt: int) -> int | None:

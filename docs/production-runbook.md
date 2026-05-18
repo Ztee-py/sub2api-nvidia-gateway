@@ -64,6 +64,16 @@ Before enabling a real provider:
 
 See [Payment and recharge system](payment-recharge.md) for provider-specific setup and callback URLs.
 
+For QR-code collection through `qrpay-bridge`, also verify:
+
+- `https://Zteapi.com/qrpay/health` returns `{"ok":true,...}`.
+- `https://Zteapi.com/qrpay/api/watch/public-status` returns the sanitized watcher state.
+- A ¥1 balance order reaches `COMPLETED` and increases `users.balance`.
+- A small subscription order reaches `COMPLETED` and creates or extends `user_subscriptions`.
+- Replaying the same watcher receipt does not credit the user twice.
+
+The full QR-code closed-loop test checklist is in [Epay QR-code closed loop](qrpay-epay-closed-loop.md).
+
 ## Group And Key Rules
 
 Keep groups separate:
@@ -204,11 +214,12 @@ docker compose up -d
    docker compose config >/tmp/sub2api-compose-config.txt
    ```
 
-4. Rebuild only what changed:
+4. Rebuild and restart the edge services that changed:
 
    ```bash
-   docker compose build nvidia-adapter
-   docker compose up -d nvidia-adapter
+   docker compose build nvidia-adapter html-injector qrpay-bridge
+   docker compose up -d nvidia-adapter html-injector qrpay-bridge
+   docker compose restart caddy
    ```
 
 5. Run health check and endpoint verification.
