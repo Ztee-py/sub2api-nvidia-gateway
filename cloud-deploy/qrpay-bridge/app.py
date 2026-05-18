@@ -1289,6 +1289,8 @@ INDEX_HTML = """<!doctype html>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>ZteAPI 充值/订阅</title>
+  <link rel="stylesheet" href="/zteapi-floating-doc.css" data-zteapi-floating-doc>
+  <script defer src="/zteapi-floating-doc.js" data-zteapi-floating-doc></script>
   <style>
     :root { color-scheme: light; --text:#111827; --muted:#6b7280; --line:#e5e7eb; --bg:#f7f8fb; --panel:#fff; --primary:#111827; --ok:#047857; --warn:#b45309; }
     * { box-sizing:border-box; }

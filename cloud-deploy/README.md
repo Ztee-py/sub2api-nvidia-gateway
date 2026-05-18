@@ -205,7 +205,7 @@ It documents the public OpenAI-compatible Base URL, API key usage, Codex configu
 
 ## 7.2 User Documentation Button And Payment Sidebar Wiring
 
-The user-facing app pages include a bottom-right `API 接入文档` shortcut that opens the public access guide. Payment is not duplicated as a floating button; the injector instead makes the existing left-sidebar `充值/订阅` and `我的订单` links perform full-page navigation so Caddy serves the QRPay pages at `/purchase` and `/orders`.
+The user-facing app pages include a bottom-right `API 接入文档` shortcut that opens the public access guide. Payment is not duplicated as a floating button; the injector instead makes the existing left-sidebar `充值/订阅` and `我的订单` links perform full-page navigation so Caddy serves the QRPay pages at `/purchase`, `/subscriptions` and `/orders`.
 
 The same injector adds an admin-side `QR 收款订单` link under the admin sidebar, pointing to `/qrpay/admin/orders`.
 
@@ -216,7 +216,7 @@ cloud-deploy/public/inject/zteapi-floating-doc.css
 cloud-deploy/public/inject/zteapi-floating-doc.js
 ```
 
-The documentation button is shown on normal user pages such as `/dashboard`, `/keys`, `/usage`, `/profile` and `/subscriptions`. It is hidden on admin, login, registration, setup, legal and OAuth callback pages.
+The documentation button is shown on normal user pages such as `/dashboard`, `/keys`, `/usage`, `/profile` and the QRPay user pages `/purchase`, `/subscriptions` and `/orders`. It is hidden on admin, QRPay admin, login, registration, setup, legal and OAuth callback pages.
 
 The injector has an internal health endpoint so Caddy only depends on it after it is ready:
 

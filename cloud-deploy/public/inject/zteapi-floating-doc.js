@@ -1,6 +1,7 @@
 (function () {
   const DOC_HIDDEN_ROUTES = [
     /^\/admin(?:\/|$)/,
+    /^\/qrpay\/admin(?:\/|$)/,
     /^\/login(?:\/|$)/,
     /^\/register(?:\/|$)/,
     /^\/setup(?:\/|$)/,
