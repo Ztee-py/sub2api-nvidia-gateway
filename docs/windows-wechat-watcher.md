@@ -1,6 +1,6 @@
 # Windows WeChat Watcher
 
-This watcher is for personal/static WeChat QR-code receipts. It runs on the Windows PC that logs into the receiving WeChat account, reads new WeChat receipt notifications, extracts the paid amount, and posts it to:
+This watcher is for personal/static WeChat QR-code receipts. It runs on the Windows PC that logs into the receiving WeChat account, reads only payment-related text from local WeChat message sources, extracts the paid amount, and posts it to:
 
 ```text
 POST https://Zteapi.com/qrpay/api/watch/wechat-receipt
@@ -13,8 +13,8 @@ The server still performs the final match. If the watcher does not send `out_tra
 - Windows 10/11.
 - Python 3.10+ is installed and available as `python`.
 - PC WeChat is logged into the receiving WeChat account.
-- Windows notifications are enabled for WeChat.
-- The WeChat payment/receipt helper chat is not muted.
+- `ylytdeng/wechat-decrypt` is installed on the same Windows account and has produced a decrypted `decrypted\message` directory.
+- The WeChat payment/receipt helper chat is present in the local WeChat message database.
 - Server config keeps WeChat amount jitter enabled:
 
 ```text
@@ -38,13 +38,17 @@ Fill:
 ```text
 QRPAY_BRIDGE_URL=https://Zteapi.com/qrpay
 QRPAY_WATCHER_SECRET=your-real-secret
-WECHAT_WATCHER_SOURCE=wechat-window-ocr
-WECHAT_WINDOW_OCR_NO_FOREGROUND=false
+WECHAT_WATCHER_SOURCE=wechat-decrypt-db
+WECHAT_DECRYPT_MESSAGE_DIR=C:\path\to\wechat-decrypt\decrypted\message
+WECHAT_DECRYPT_DB_GLOB=message_*.db
+WECHAT_WATCHER_STATE_RETENTION_DAYS=30
 ```
 
 Do not commit `wechat_windows_watcher.env`.
 
-`WECHAT_WINDOW_OCR_NO_FOREGROUND=false` is the practical default. The OCR helper first tries to capture the WeChat window in the background. If that capture is blank, it falls back to bringing the WeChat window forward and reading the visible window. Set it to `true` only if you prefer "never steal focus" and accept that some PC WeChat builds may return blank captures.
+This source is receipt-only: it polls the already-decrypted message SQLite files in place, parses WeChat receipt/transfer records, keeps a small local `seen_receipts` cache, and sends only the payment event to `qrpay-bridge`. It does not export chats, images, voice, video, or full WeChat data to the server. The local cache is pruned by `WECHAT_WATCHER_STATE_RETENTION_DAYS`.
+
+OCR remains a fallback. To use it, set `WECHAT_WATCHER_SOURCE=wechat-window-ocr`. `WECHAT_WINDOW_OCR_NO_FOREGROUND=false` first tries to capture the WeChat window in the background. If that capture is blank, it falls back to bringing WeChat forward and reading the visible window.
 
 ## Parser Smoke Test
 
@@ -56,6 +60,12 @@ python .\wechat_windows_watcher.py --test-text "微信收款助手 收款到账0
 
 Expected result: JSON with `"amount": "0.01"` and a `wechat-win-...` transaction id.
 
+For a transfer XML smoke test:
+
+```powershell
+python .\wechat_windows_watcher.py --test-text '<msg><appmsg><title>微信转账</title><type>2000</type><wcpayinfo><paysubtype>3</paysubtype><feedesc>￥0.01</feedesc><transcationid>test123</transcationid></wcpayinfo></appmsg></msg>'
+```
+
 ## Dry Run
 
 Start with dry run:
@@ -66,11 +76,11 @@ Start with dry run:
 
 Important behavior:
 
-- On first startup it scans current Windows notifications and marks old matching receipts as seen.
+- On first startup it scans current source rows and marks old matching receipts as seen.
 - It does not confirm orders in `-DryRun`.
 - Keep this window open, create a tiny WeChat test order, pay it, and watch for `DRY-RUN match amount=...`.
 
-If the dry run sees nothing, check Windows notification settings first. If PC WeChat does not create receipt notifications on your machine, this source cannot see payments.
+If the dry run sees nothing with `wechat-decrypt-db`, confirm that `WECHAT_DECRYPT_MESSAGE_DIR` points at the active decrypted message directory and that the latest WeChat receipt message appears in those `message_*.db` files.
 
 ## Real Run
 
@@ -85,11 +95,12 @@ The watcher sends:
 ```json
 {
   "amount": "0.01",
-  "transaction_id": "wechat-win-...",
+  "transaction_id": "wechat-decrypt-...",
   "payer": "",
-  "source": "windows-notification-db",
-  "source_id": "Notification:123",
-  "observed_at": "2026-05-17T20:00:00+08:00"
+  "source": "wechat-decrypt-db",
+  "source_id": "message_0.db:Msg_xxx:123:456",
+  "observed_at": "2026-05-17T20:00:00+08:00",
+  "raw_hash": "sha256..."
 }
 ```
 
@@ -117,12 +128,13 @@ To remove the logon task:
 
 Sub2API user login in the browser cannot and should not start this watcher. The watcher belongs to the receiving WeChat account's Windows machine. Once the scheduled task is installed, it starts with that Windows account, not with each website user.
 
+This is the intended "automatic realtime" mode for production: the local Windows account logs in, WeChat stays logged in, `wechat-decrypt` keeps its decrypted message output available, and the scheduled watcher continuously posts heartbeats. The user payment center shows those heartbeats as 微信监听正常/异常.
+
 ## Limitations
 
 This is less stable than Android VMQ or official WeChat Pay:
 
-- It depends on PC WeChat and Windows actually producing receipt notifications.
-- If Windows Focus Assist hides notifications, the watcher may miss them.
-- The OCR source can reduce focus stealing by trying background capture first, but WeChat may render blank when minimized or hardware-accelerated. Keep the receipt chat/window available on a dedicated desktop, spare Windows user session, or small Windows VM for the most stable PC-based setup.
-- If PC sleeps, logs out, or WeChat changes notification format, receipts may not be detected.
+- It depends on PC WeChat and the `wechat-decrypt` output remaining current.
+- If PC sleeps, logs out, WeChat exits, or the decrypted DB stops updating, receipts may not be detected.
+- OCR is still available as a fallback, but it is not the primary source.
 - It should be treated as a practical bridge, not a bank-grade payment callback.

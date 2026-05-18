@@ -165,6 +165,8 @@ https://YOUR_DOMAIN/subscriptions
 https://YOUR_DOMAIN/orders
 ```
 
+All three paths render the same payment center. `/purchase` opens the 余额充值 tab, `/subscriptions` opens 套餐订阅, and `/orders` opens 我的订单. The page header shows the sanitized WeChat watcher state, including latest heartbeat and latest confirmed WeChat order time.
+
 Admin QR-code order page:
 
 ```text
@@ -180,10 +182,11 @@ Alipay account-log watcher: POST https://YOUR_DOMAIN/qrpay/api/watch/alipay-bill
 WeChat receipt watcher:     POST https://YOUR_DOMAIN/qrpay/api/watch/wechat-receipt
 VMQ-style callback:         POST https://YOUR_DOMAIN/qrpay/api/webhook/vmq
 Watcher heartbeat:          POST https://YOUR_DOMAIN/qrpay/api/watch/heartbeat
-Watcher status:             GET  https://YOUR_DOMAIN/qrpay/api/watch/status
+Admin watcher status:       GET  https://YOUR_DOMAIN/qrpay/api/watch/status
+Public watcher summary:     GET  https://YOUR_DOMAIN/qrpay/api/watch/public-status
 ```
 
-For a US-hosted server, inbound HTTPS callbacks are fine when the domain and Caddy are reachable. For personal/static WeChat QR codes and for the most reliable Alipay account-log polling, run a China-side watcher or VMQ-style middle layer and let it POST signed callbacks to the US server.
+For a US-hosted server, inbound HTTPS callbacks are fine when the domain and Caddy are reachable. For personal/static WeChat QR codes, the recommended setup is a lightweight local Windows watcher using `WECHAT_WATCHER_SOURCE=wechat-decrypt-db`; it reads the already-decrypted `ylytdeng/wechat-decrypt` message DB output and posts small receipt events plus heartbeats to the US server. OCR is kept as a fallback source.
 
 See [Epay QR-code closed loop](../docs/qrpay-epay-closed-loop.md) for the full flow, environment variables, watcher setup and test commands.
 
@@ -205,7 +208,7 @@ It documents the public OpenAI-compatible Base URL, API key usage, Codex configu
 
 ## 7.2 User Documentation Button And Payment Sidebar Wiring
 
-The user-facing app pages include a bottom-right `API 接入文档` shortcut that opens the public access guide. Payment is not duplicated as a floating button; the injector instead makes the existing left-sidebar `充值/订阅` and `我的订单` links perform full-page navigation so Caddy serves the QRPay pages at `/purchase`, `/subscriptions` and `/orders`.
+The user-facing app pages include a bottom-right `API 接入文档` shortcut that opens the public access guide. Payment is not duplicated as a floating button; the injector collapses the user sidebar to one primary `充值/订阅` entry and hides duplicate sidebar entries such as `我的订阅` and `我的订单`. Non-sidebar links to `/purchase`, `/subscriptions` and `/orders` still perform full-page navigation so Caddy serves the QRPay payment center.
 
 The same injector adds an admin-side `QR 收款订单` link under the admin sidebar, pointing to `/qrpay/admin/orders`.
 

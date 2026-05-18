@@ -171,7 +171,7 @@ The watcher polls `alipay.data.bill.accountlog.query` every 3 seconds, forwards 
 For WeChat personal/static QR-code payments, choose one:
 
 - VMQ-style watcher: send signed callbacks to `POST /qrpay/api/webhook/vmq`.
-- Windows watcher: run `cloud-deploy/qrpay-bridge/watchers/wechat_windows_watcher.py` on the PC that logs into the receiving WeChat account. See `docs/windows-wechat-watcher.md`.
+- Windows watcher: run `cloud-deploy/qrpay-bridge/watchers/wechat_windows_watcher.py` on the PC that logs into the receiving WeChat account. The recommended production source is `wechat-decrypt-db`, which reads only already-decrypted payment-message rows from `ylytdeng/wechat-decrypt` output. See `docs/windows-wechat-watcher.md`.
 - Custom watcher: send receipts to `POST /qrpay/api/watch/wechat-receipt`.
 - Manual fallback: call `POST /qrpay/api/admin/orders/{out_trade_no}/confirm`.
 
@@ -206,7 +206,7 @@ Watcher heartbeat:
 curl -X POST "https://YOUR_DOMAIN/qrpay/api/watch/heartbeat" \
   -H "Content-Type: application/json" \
   -H "X-Qrpay-Secret: ${QRPAY_WATCHER_SECRET}" \
-  -d '{"name":"wechat-receipt","kind":"wechat","ok":true,"msg":"watcher alive"}'
+  -d '{"name":"wechat-decrypt","kind":"wechat","ok":true,"msg":"watcher alive"}'
 ```
 
 Admin status:
@@ -214,6 +214,12 @@ Admin status:
 ```bash
 curl "https://YOUR_DOMAIN/qrpay/api/watch/status" \
   -H "X-Qrpay-Secret: ${QRPAY_ADMIN_SECRET}"
+```
+
+User-facing payment pages read the sanitized public summary from:
+
+```bash
+curl "https://YOUR_DOMAIN/qrpay/api/watch/public-status"
 ```
 
 When no heartbeat arrives within `QRPAY_WATCHER_STALE_AFTER_SECONDS`, the monitor moves through `PENDING` and then `DOWN`, following the Uptime Kuma retry model.

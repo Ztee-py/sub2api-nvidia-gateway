@@ -330,6 +330,60 @@ def mark_stale_monitors(conn) -> None:
         )
 
 
+def wechat_watcher_summary(conn) -> dict[str, Any]:
+    mark_stale_monitors(conn)
+    monitors = conn.execute(
+        """
+        SELECT *
+          FROM qrpay_bridge_monitors
+         WHERE kind='wechat'
+           AND name <> 'wechat-receipt'
+         ORDER BY CASE WHEN last_heartbeat_at IS NULL THEN 1 ELSE 0 END,
+                  last_heartbeat_at DESC,
+                  updated_at DESC
+        """
+    ).fetchall()
+    if not monitors:
+        monitors = conn.execute(
+            """
+            SELECT *
+              FROM qrpay_bridge_monitors
+             WHERE kind='wechat'
+             ORDER BY CASE WHEN last_heartbeat_at IS NULL THEN 1 ELSE 0 END,
+                      last_heartbeat_at DESC,
+                      updated_at DESC
+            """
+        ).fetchall()
+    monitor = monitors[0] if monitors else None
+    confirmed = conn.execute(
+        """
+        SELECT MAX(COALESCE(completed_at, paid_at, updated_at)) AS last_confirmed_at
+          FROM payment_orders
+         WHERE payment_type='wechat_code'
+           AND status='COMPLETED'
+        """
+    ).fetchone()
+    status = monitor["status"] if monitor else PENDING
+    ok = status == UP
+    last_heartbeat_at = monitor.get("last_heartbeat_at") if monitor else None
+    last_confirmed_at = confirmed.get("last_confirmed_at") if confirmed else None
+    label = "微信监听正常" if ok else "微信监听异常"
+    if not monitor or not last_heartbeat_at:
+        label = "微信监听未启用"
+    return {
+        "wechat_enabled": settings.enable_wechat_code,
+        "ok": ok,
+        "label": label,
+        "status": monitor_status_name(status),
+        "status_code": status,
+        "monitor_name": monitor.get("name") if monitor else "",
+        "last_heartbeat_at": last_heartbeat_at.isoformat() if last_heartbeat_at else None,
+        "last_confirmed_order_at": last_confirmed_at.isoformat() if last_confirmed_at else None,
+        "last_message": monitor.get("last_message") if monitor else "",
+        "warning": "" if ok else "自动确认可能延迟，请联系管理员或等待人工补单。",
+    }
+
+
 def ensure_bridge_schema() -> None:
     with db_conn() as conn:
         conn.execute(
@@ -897,6 +951,7 @@ async def get_config(request: Request) -> JSONResponse:
     with db_conn() as conn:
         expire_pending_orders(conn)
         plans = load_plans(conn)
+        watcher_status = wechat_watcher_summary(conn)
         conn.commit()
     quick_amounts = [
         decimal_to_float(money_to_decimal(item))
@@ -912,6 +967,7 @@ async def get_config(request: Request) -> JSONResponse:
             "plans": plans,
             "order_timeout_minutes": settings.order_timeout_minutes,
             "base_url": public_base(request),
+            "watcher_status": watcher_status,
         }
     )
 
@@ -1244,6 +1300,14 @@ async def watch_heartbeat(request: Request, x_qrpay_secret: str | None = Header(
     return json_response(result)
 
 
+@app.get("/api/watch/public-status")
+def public_watch_status() -> JSONResponse:
+    with db_conn() as conn:
+        summary = wechat_watcher_summary(conn)
+        conn.commit()
+    return json_response(summary)
+
+
 @app.get("/api/watch/status")
 def watch_status(x_qrpay_secret: str | None = Header(default=None)) -> JSONResponse:
     require_shared_secret(x_qrpay_secret, settings.admin_secret, "admin")
@@ -1299,6 +1363,12 @@ INDEX_HTML = """<!doctype html>
     .top { display:flex; justify-content:space-between; align-items:flex-end; gap:16px; margin-bottom:18px; }
     h1 { margin:0; font-size:28px; letter-spacing:0; }
     .sub { color:var(--muted); margin-top:6px; }
+    .watch { display:grid; grid-template-columns:1.1fr 1fr 1fr; gap:12px; margin:16px 0 18px; border:1px solid var(--line); border-radius:8px; background:#fff; padding:14px; }
+    .watch strong { display:block; font-size:14px; margin-bottom:4px; }
+    .watch span { color:var(--muted); font-size:13px; }
+    .watch.ok { border-color:#a7f3d0; background:#f0fdf4; }
+    .watch.warn { border-color:#fde68a; background:#fffbeb; }
+    .watch.bad { border-color:#fecaca; background:#fff7f7; }
     .tabs { display:flex; gap:8px; flex-wrap:wrap; margin:18px 0; }
     .tab { border:1px solid var(--line); background:#fff; border-radius:6px; padding:10px 14px; cursor:pointer; font-weight:700; }
     .tab.active { background:var(--primary); color:#fff; border-color:var(--primary); }
@@ -1332,9 +1402,10 @@ INDEX_HTML = """<!doctype html>
     .dialog { width:min(440px,100%); background:#fff; border-radius:8px; padding:20px; }
     .qr { display:block; width:240px; height:240px; object-fit:contain; margin:16px auto; border:1px solid var(--line); border-radius:6px; }
     .notice { color:var(--muted); line-height:1.7; font-size:14px; }
+    .inline-warning { display:block; color:#92400e; line-height:1.6; font-size:13px; margin-top:8px; }
     .error { color:#991b1b; font-weight:700; }
     .success { color:var(--ok); font-weight:800; }
-    @media (max-width: 820px) { .grid, .row { grid-template-columns:1fr; } .top { align-items:flex-start; flex-direction:column; } }
+    @media (max-width: 820px) { .grid, .row, .watch { grid-template-columns:1fr; } .top { align-items:flex-start; flex-direction:column; } }
   </style>
 </head>
 <body>
@@ -1346,10 +1417,15 @@ INDEX_HTML = """<!doctype html>
         <button class="btn" id="refreshBtn">刷新</button>
       </div>
     </div>
+    <div class="watch warn" id="watchStatus">
+      <div><strong>微信监听状态</strong><span>正在读取监听状态...</span></div>
+      <div><strong>最近心跳</strong><span>-</span></div>
+      <div><strong>最近确认订单</strong><span>-</span></div>
+    </div>
     <div class="tabs">
-      <button class="tab active" data-tab="recharge">充值</button>
-      <button class="tab" data-tab="plans">订阅</button>
-      <button class="tab" data-tab="orders">订单</button>
+      <button class="tab active" data-tab="recharge">余额充值</button>
+      <button class="tab" data-tab="plans">套餐订阅</button>
+      <button class="tab" data-tab="orders">我的订单</button>
     </div>
     <section id="recharge" class="view grid">
       <div class="panel">
@@ -1357,7 +1433,10 @@ INDEX_HTML = """<!doctype html>
         <div class="amounts" id="amounts"></div>
         <div class="row">
           <input id="customAmount" inputmode="decimal" placeholder="自定义金额">
-          <button class="btn" id="createRecharge">确认充值</button>
+          <div>
+            <button class="btn" id="createRecharge" style="width:100%">确认充值</button>
+            <span class="inline-warning" id="createWarning"></span>
+          </div>
         </div>
       </div>
       <div class="panel">
@@ -1370,6 +1449,7 @@ INDEX_HTML = """<!doctype html>
       <div class="panel">
         <h2>订阅套餐</h2>
         <div class="plans" id="plansList"></div>
+        <p class="inline-warning" id="planWarning"></p>
       </div>
     </section>
     <section id="orders" class="view" style="display:none">
@@ -1390,7 +1470,7 @@ INDEX_HTML = """<!doctype html>
     </div>
   </div>
   <script>
-    const state = { config:null, amount:null, method:null, orders:[], payPollTimer:null, redirectTimer:null };
+    const state = { config:null, watcherStatus:null, amount:null, method:null, orders:[], payPollTimer:null, redirectTimer:null };
     function token() {
       const stores = [localStorage, sessionStorage];
       const preferred = ['token','access_token','auth_token','jwt','sub2api_token'];
@@ -1407,6 +1487,28 @@ INDEX_HTML = """<!doctype html>
       return payload.data;
     }
     function showError(err) { document.getElementById('errorBox').textContent = err ? String(err.message || err) : ''; }
+    function fmtTime(value) {
+      if (!value) return '-';
+      const date = new Date(value);
+      if (Number.isNaN(date.getTime())) return String(value).replace('T',' ').slice(0,19);
+      return date.toLocaleString('zh-CN', {hour12:false});
+    }
+    function watcherWarning() {
+      if (state.method !== 'wechat_code') return '';
+      const status = state.watcherStatus || {};
+      return status.ok ? '' : (status.warning || '自动确认可能延迟，请联系管理员或等待人工补单。');
+    }
+    function renderWatchStatus() {
+      const box = document.getElementById('watchStatus');
+      const status = state.watcherStatus || {};
+      const cls = status.ok ? 'ok' : (status.last_heartbeat_at ? 'bad' : 'warn');
+      box.className = 'watch ' + cls;
+      box.innerHTML = [
+        `<div><strong>${status.label || '微信监听未启用'}</strong><span>${status.monitor_name || '等待本地 watcher 心跳'}</span></div>`,
+        `<div><strong>最近心跳</strong><span>${fmtTime(status.last_heartbeat_at)}</span></div>`,
+        `<div><strong>最近确认订单</strong><span>${fmtTime(status.last_confirmed_order_at)}</span></div>`
+      ].join('');
+    }
     function rememberSuccess(item) {
       try {
         sessionStorage.setItem('zteapi_qrpay_success', JSON.stringify({
@@ -1455,16 +1557,18 @@ INDEX_HTML = """<!doctype html>
     function renderConfig() {
       document.getElementById('amounts').innerHTML = state.config.quick_amounts.map(v => `<button class="amount ${state.amount===v?'active':''}" data-amount="${v}">¥${v}</button>`).join('');
       document.querySelectorAll('.amount').forEach(b => b.onclick = () => { state.amount = Number(b.dataset.amount); document.getElementById('customAmount').value=''; renderConfig(); });
+      if (!state.method && state.config.methods[0]) state.method = state.config.methods[0].id;
       document.getElementById('methods').innerHTML = state.config.methods.map(m => `<button class="method ${state.method===m.id?'active':''}" data-method="${m.id}">${m.label}</button>`).join('');
       document.querySelectorAll('.method').forEach(b => b.onclick = () => { state.method = b.dataset.method; renderConfig(); });
       const m = state.config.methods.find(x => x.id === state.method);
       document.getElementById('methodNotice').textContent = m ? m.description : '请选择支付方式。';
-      if (!state.method && state.config.methods[0]) state.method = state.config.methods[0].id;
+      document.getElementById('createWarning').textContent = watcherWarning();
       renderPlans();
     }
     function renderPlans() {
       const html = (state.config.plans || []).map(p => `<div class="plan"><strong>${p.name}</strong><div class="price">¥${p.price}</div><div class="notice">${p.group_name || ''} ${p.validity_days}${p.validity_unit}</div><button class="btn" data-plan="${p.id}" style="width:100%;margin-top:14px">立即开通/续费</button></div>`).join('');
       document.getElementById('plansList').innerHTML = html || '<p class="notice">暂无可售套餐，请先在 Sub2API 后台创建 subscription_plans。</p>';
+      document.getElementById('planWarning').textContent = watcherWarning();
       document.querySelectorAll('[data-plan]').forEach(b => b.onclick = () => createOrder({order_type:'subscription', plan_id:Number(b.dataset.plan)}));
     }
     function renderOrders() {
@@ -1474,6 +1578,9 @@ INDEX_HTML = """<!doctype html>
     async function refresh() {
       showError('');
       state.config = await api('/config');
+      state.watcherStatus = state.config.watcher_status || null;
+      try { state.watcherStatus = await api('/watch/public-status'); } catch (_) {}
+      renderWatchStatus();
       if (!state.amount && state.config.quick_amounts.length) state.amount = state.config.quick_amounts[0];
       if (!state.method && state.config.methods.length) state.method = state.config.methods[0].id;
       renderConfig();

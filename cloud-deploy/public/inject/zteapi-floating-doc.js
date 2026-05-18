@@ -88,21 +88,63 @@
     return terms.some((term) => text.includes(term));
   }
 
+  function isSidebarLink(link) {
+    return Boolean(link.closest("aside,nav,.sidebar,.sidebar-nav,.layout-sidebar,[class*='sidebar']"));
+  }
+
+  function setPaymentMainLabel(link) {
+    const label =
+      link.querySelector(".sidebar-label") ||
+      link.querySelector("span") ||
+      link;
+    if (label && compactText(label) !== "充值/订阅") {
+      label.textContent = "充值/订阅";
+    }
+  }
+
   function patchUserPaymentLinks() {
     if (/^\/admin(?:\/|$)/.test(window.location.pathname || "/")) return;
+    let mainLink = null;
     document.querySelectorAll("a[href]").forEach((link) => {
       const path = linkPath(link);
       const text = compactText(link);
+      const inSidebar = isSidebarLink(link);
       if (path === "/purchase" || text.includes("充值")) {
         forceFullNavigation(link, "/purchase");
+        if (inSidebar) {
+          setPaymentMainLabel(link);
+          mainLink = mainLink || link;
+        }
         return;
       }
-      if (path === "/subscriptions" || textHasAny(text, ["订阅", "套餐"])) {
-        forceFullNavigation(link, "/subscriptions");
+      if (path === "/subscriptions" || textHasAny(text, ["我的订阅", "订阅", "套餐"])) {
+        if (inSidebar) {
+          if (!mainLink) {
+            forceFullNavigation(link, "/purchase");
+            setPaymentMainLabel(link);
+            mainLink = link;
+          } else {
+            link.style.display = "none";
+            link.dataset.zteapiPaymentHidden = "1";
+          }
+        } else {
+          forceFullNavigation(link, "/subscriptions");
+        }
         return;
       }
       if (path === "/orders" || textHasAny(text, ["我的订单", "订单记录"])) {
-        forceFullNavigation(link, "/orders");
+        if (inSidebar) {
+          if (!mainLink) {
+            forceFullNavigation(link, "/purchase");
+            setPaymentMainLabel(link);
+            mainLink = link;
+          } else {
+            link.style.display = "none";
+            link.dataset.zteapiPaymentHidden = "1";
+          }
+        } else {
+          forceFullNavigation(link, "/orders");
+        }
       }
     });
   }

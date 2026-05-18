@@ -14,8 +14,9 @@ import tempfile
 import time
 import urllib.request
 import urllib.error
+import xml.etree.ElementTree as ET
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 from pathlib import Path
 from typing import Iterable
@@ -38,6 +39,7 @@ PAYER_PATTERNS = [
     re.compile(r"付款方[:：]\s*(?P<payer>[^\s，。；;]{1,24})"),
     re.compile(r"付款人[:：]\s*(?P<payer>[^\s，。；;]{1,24})"),
 ]
+TRANSFER_RECEIVED_SUBTYPES = {"3", "8"}
 
 
 @dataclass(frozen=True)
@@ -186,6 +188,78 @@ def parse_wechat_receipt(event: TextEvent) -> Receipt | None:
     )
 
 
+def xml_fragment(text: str) -> str:
+    for start_tag, end_tag in (("<msg", "</msg>"), ("<appmsg", "</appmsg>")):
+        start = text.find(start_tag)
+        end = text.rfind(end_tag)
+        if start >= 0 and end >= start:
+            return text[start : end + len(end_tag)]
+    return ""
+
+
+def xml_pick(root: ET.Element, *tags: str) -> str:
+    wanted = {tag.lower() for tag in tags}
+    for node in root.iter():
+        if node.tag.lower() in wanted and node.text:
+            return normalize_text(node.text)
+    return ""
+
+
+def parse_wechat_transfer_receipt(event: TextEvent) -> Receipt | None:
+    text = normalize_text(event.text)
+    fragment = xml_fragment(text)
+    if not fragment:
+        return None
+    try:
+        root = ET.fromstring(fragment)
+    except ET.ParseError:
+        return None
+    appmsg = root if root.tag.lower() == "appmsg" else root.find(".//appmsg")
+    if appmsg is None:
+        return None
+    app_type = xml_pick(appmsg, "type")
+    wcpay = appmsg.find("wcpayinfo")
+    if app_type != "2000" and wcpay is None:
+        return None
+    wcpay = wcpay or appmsg
+    paysubtype = xml_pick(wcpay, "paysubtype")
+    title = xml_pick(appmsg, "title")
+    if paysubtype and paysubtype not in TRANSFER_RECEIVED_SUBTYPES:
+        return None
+    if not paysubtype and not RECEIPT_RE.search(f"{title} {text}"):
+        return None
+
+    fee_desc = xml_pick(wcpay, "feedesc", "feeDesc")
+    amount = choose_amount(f"微信支付 已收款 {fee_desc} {title}")
+    if not amount:
+        return None
+
+    payer = xml_pick(wcpay, "payer_username", "payerUsername")
+    provider_trade_no = (
+        xml_pick(wcpay, "transcationid", "transcationId")
+        or xml_pick(wcpay, "transferid", "transferId")
+        or xml_pick(wcpay, "paymsgid", "payMsgId")
+    )
+    fingerprint_material = "|".join([event.source, event.source_id, provider_trade_no, amount, text[:500]])
+    fingerprint = hashlib.sha256(fingerprint_material.encode("utf-8", errors="ignore")).hexdigest()
+    trade_suffix = re.sub(r"[^A-Za-z0-9_.:-]", "", provider_trade_no)[:88]
+    transaction_id = f"wechat-decrypt-{trade_suffix}" if trade_suffix else f"wechat-decrypt-{fingerprint[:24]}"
+    return Receipt(
+        amount=amount,
+        transaction_id=transaction_id,
+        payer=payer,
+        source=event.source,
+        source_id=event.source_id,
+        observed_at=event.observed_at,
+        text=text,
+        fingerprint=fingerprint,
+    )
+
+
+def parse_receipt(event: TextEvent) -> Receipt | None:
+    return parse_wechat_transfer_receipt(event) or parse_wechat_receipt(event)
+
+
 def quote_ident(name: str) -> str:
     return '"' + name.replace('"', '""') + '"'
 
@@ -255,6 +329,102 @@ class NotificationDbSource:
                     text=text,
                     observed_at=now_iso(),
                 )
+
+
+def iso_from_unix(value: object) -> str:
+    try:
+        timestamp = int(value)
+    except (TypeError, ValueError):
+        return now_iso()
+    if timestamp <= 0:
+        return now_iso()
+    return datetime.fromtimestamp(timestamp, timezone.utc).astimezone().isoformat(timespec="seconds")
+
+
+class WeChatDecryptDbSource:
+    def __init__(self, message_dir: Path, db_glob: str, max_rows_per_table: int) -> None:
+        self.message_dir = message_dir
+        self.db_glob = db_glob
+        self.max_rows_per_table = max_rows_per_table
+
+    def _db_files(self) -> list[Path]:
+        if self.message_dir.is_file():
+            return [self.message_dir]
+        if not self.message_dir.exists():
+            raise FileNotFoundError(
+                f"wechat-decrypt message dir not found: {self.message_dir}. "
+                "Run wechat-decrypt first or set WECHAT_DECRYPT_MESSAGE_DIR."
+            )
+        return sorted(path for path in self.message_dir.glob(self.db_glob) if path.is_file())
+
+    def poll(self) -> Iterable[TextEvent]:
+        for db_file in self._db_files():
+            conn = sqlite3.connect(str(db_file))
+            conn.row_factory = sqlite3.Row
+            try:
+                tables = [
+                    row["name"]
+                    for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table' AND name LIKE 'Msg_%'").fetchall()
+                ]
+                for table in tables:
+                    yield from self._events_from_table(conn, db_file.name, table)
+            finally:
+                conn.close()
+
+    def _events_from_table(self, conn: sqlite3.Connection, db_name: str, table: str) -> Iterable[TextEvent]:
+        try:
+            columns = [row["name"] for row in conn.execute(f"PRAGMA table_info({quote_ident(table)})").fetchall()]
+        except sqlite3.DatabaseError:
+            return
+        if not columns:
+            return
+
+        lower = {col.lower(): col for col in columns}
+        wanted_names = [
+            "localid",
+            "msgsvrid",
+            "type",
+            "subtype",
+            "issender",
+            "createtime",
+            "strtalker",
+            "strcontent",
+            "displaycontent",
+            "compresscontent",
+            "bytesextra",
+        ]
+        selected_cols = [lower[name] for name in wanted_names if name in lower]
+        if not selected_cols:
+            selected_cols = columns
+        selected = ", ".join(quote_ident(col) for col in selected_cols)
+        order_col = lower.get("localid") or lower.get("createtime") or "rowid"
+        sql = f"SELECT rowid AS __rowid__, {selected} FROM {quote_ident(table)} ORDER BY {quote_ident(order_col) if order_col != 'rowid' else 'rowid'} DESC LIMIT ?"
+        try:
+            rows = conn.execute(sql, (self.max_rows_per_table,)).fetchall()
+        except sqlite3.DatabaseError:
+            return
+
+        for row in rows:
+            parts = []
+            for col in selected_cols:
+                value = row[col]
+                if value is None:
+                    continue
+                text = decode_blob(value) if isinstance(value, bytes) else str(value)
+                if text:
+                    parts.append(text[:4000])
+            text = normalize_text(" ".join(parts))
+            if not text:
+                continue
+            local_id = row[lower["localid"]] if "localid" in lower else row["__rowid__"]
+            msg_svr_id = row[lower["msgsvrid"]] if "msgsvrid" in lower else ""
+            create_time = row[lower["createtime"]] if "createtime" in lower else None
+            yield TextEvent(
+                source="wechat-decrypt-db",
+                source_id=f"{db_name}:{table}:{local_id}:{msg_svr_id}",
+                text=text,
+                observed_at=iso_from_unix(create_time),
+            )
 
 
 class FileTailSource:
@@ -335,7 +505,7 @@ class WeChatWindowOcrSource:
 
 
 class StateStore:
-    def __init__(self, path: Path) -> None:
+    def __init__(self, path: Path, retention_days: int = 30) -> None:
         self.path = path
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self.conn = sqlite3.connect(path)
@@ -354,6 +524,7 @@ class StateStore:
             """
         )
         self.conn.commit()
+        self.prune(retention_days)
 
     def has(self, fingerprint: str) -> bool:
         row = self.conn.execute(
@@ -385,6 +556,13 @@ class StateStore:
                 now,
             ),
         )
+        self.conn.commit()
+
+    def prune(self, retention_days: int) -> None:
+        if retention_days <= 0:
+            return
+        cutoff = (datetime.now(timezone.utc).astimezone() - timedelta(days=retention_days)).isoformat(timespec="seconds")
+        self.conn.execute("DELETE FROM seen_receipts WHERE updated_at < ?", (cutoff,))
         self.conn.commit()
 
     def close(self) -> None:
@@ -421,12 +599,13 @@ def bridge_post(args: argparse.Namespace, path: str, payload: dict) -> dict:
 def send_heartbeat(args: argparse.Namespace, ok: bool, msg: str, payload: dict | None = None) -> None:
     if args.no_heartbeat or not args.bridge_url or not args.watcher_secret:
         return
+    name = "wechat-decrypt" if args.source == "wechat-decrypt-db" else "wechat-windows"
     try:
         bridge_post(
             args,
             "/api/watch/heartbeat",
             {
-                "name": "wechat-windows",
+                "name": name,
                 "kind": "wechat",
                 "ok": ok,
                 "msg": msg,
@@ -445,6 +624,7 @@ def receipt_payload(receipt: Receipt, send_raw_text: bool) -> dict:
         "source": receipt.source,
         "source_id": receipt.source_id,
         "observed_at": receipt.observed_at,
+        "raw_hash": receipt.fingerprint,
     }
     if send_raw_text:
         payload["raw_text"] = receipt.text[:1000]
@@ -462,7 +642,7 @@ def process_receipts(
     sent = 0
     for event in events:
         scanned += 1
-        receipt = parse_wechat_receipt(event)
+        receipt = parse_receipt(event)
         if not receipt:
             continue
         matched += 1
@@ -509,6 +689,10 @@ def build_source(args: argparse.Namespace):
     if args.source == "wechat-window-ocr":
         screenshot = Path(args.ocr_screenshot) if args.ocr_screenshot else None
         return WeChatWindowOcrSource(Path(args.ocr_script), args.ocr_timeout, screenshot, args.ocr_no_foreground)
+    if args.source == "wechat-decrypt-db":
+        if not args.wechat_decrypt_message_dir:
+            raise SystemExit("--wechat-decrypt-message-dir or WECHAT_DECRYPT_MESSAGE_DIR is required with --source wechat-decrypt-db")
+        return WeChatDecryptDbSource(Path(args.wechat_decrypt_message_dir), args.wechat_decrypt_db_glob, args.max_rows_per_table)
     if args.source == "file-tail":
         if not args.file:
             raise SystemExit("--file is required with --source file-tail")
@@ -522,14 +706,17 @@ def build_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Windows WeChat receipt watcher for qrpay-bridge.")
     parser.add_argument("--bridge-url", default=env("QRPAY_BRIDGE_URL"), help="Example: https://Zteapi.com/qrpay")
     parser.add_argument("--watcher-secret", default=env("QRPAY_WATCHER_SECRET"))
-    parser.add_argument("--source", choices=["notification-db", "wechat-window-ocr", "file-tail", "stdin"], default=env("WECHAT_WATCHER_SOURCE", "notification-db"))
+    parser.add_argument("--source", choices=["notification-db", "wechat-window-ocr", "wechat-decrypt-db", "file-tail", "stdin"], default=env("WECHAT_WATCHER_SOURCE", "notification-db"))
     parser.add_argument("--notification-db", default=env("WECHAT_NOTIFICATION_DB", str(default_notification_db())))
+    parser.add_argument("--wechat-decrypt-message-dir", default=env("WECHAT_DECRYPT_MESSAGE_DIR"))
+    parser.add_argument("--wechat-decrypt-db-glob", default=env("WECHAT_DECRYPT_DB_GLOB", "message_*.db"))
     parser.add_argument("--ocr-script", default=env("WECHAT_WINDOW_OCR_SCRIPT", str(Path(__file__).with_name("wechat_window_ocr.ps1"))))
     parser.add_argument("--ocr-timeout", type=int, default=int(env("WECHAT_WINDOW_OCR_TIMEOUT_SECONDS", "20")))
     parser.add_argument("--ocr-screenshot", default=env("WECHAT_WINDOW_OCR_SCREENSHOT"))
     parser.add_argument("--ocr-no-foreground", action="store_true", default=env_flag("WECHAT_WINDOW_OCR_NO_FOREGROUND", False))
     parser.add_argument("--file", default=env("WECHAT_WATCHER_FILE"))
     parser.add_argument("--state-path", default=env("WECHAT_WATCHER_STATE", str(default_state_path())))
+    parser.add_argument("--state-retention-days", type=int, default=int(env("WECHAT_WATCHER_STATE_RETENTION_DAYS", "30")))
     parser.add_argument("--poll-interval", type=int, default=int(env("WECHAT_WATCHER_POLL_INTERVAL", "2")))
     parser.add_argument("--heartbeat-interval", type=int, default=int(env("WECHAT_WATCHER_HEARTBEAT_INTERVAL", "30")))
     parser.add_argument("--timeout", type=int, default=int(env("WECHAT_WATCHER_TIMEOUT_SECONDS", "15")))
@@ -552,15 +739,15 @@ def main() -> None:
     args = build_args()
     if args.test_text:
         event = TextEvent("test-text", "test", args.test_text, now_iso())
-        receipt = parse_wechat_receipt(event)
+        receipt = parse_receipt(event)
         print(json.dumps(receipt_payload(receipt, True) if receipt else {"matched": False}, ensure_ascii=False, indent=2))
         return
 
     source = build_source(args)
-    state = StateStore(Path(args.state_path))
+    state = StateStore(Path(args.state_path), args.state_retention_days)
     last_heartbeat = 0.0
     try:
-        if not args.process_existing and args.source in {"notification-db", "file-tail"}:
+        if not args.process_existing and args.source in {"notification-db", "wechat-decrypt-db", "file-tail"}:
             scanned, matched, sent = process_receipts(args, state, source.poll(), warmup=True)
             msg = f"initialized; marked existing matches as seen: scanned={scanned} matched={matched}"
             print(msg, flush=True)

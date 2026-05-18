@@ -14,6 +14,11 @@ class StaticUiInjectionTests(unittest.TestCase):
 
         self.assertIn("/zteapi-floating-doc.css", index_html_source)
         self.assertIn("/zteapi-floating-doc.js", index_html_source)
+        self.assertIn("微信监听状态", index_html_source)
+        self.assertIn("余额充值", index_html_source)
+        self.assertIn("套餐订阅", index_html_source)
+        self.assertIn("我的订单", index_html_source)
+        self.assertIn("/watch/public-status", index_html_source)
 
     def test_qrpay_admin_route_hides_floating_docs(self):
         source = (
@@ -21,6 +26,15 @@ class StaticUiInjectionTests(unittest.TestCase):
         ).read_text(encoding="utf-8")
 
         self.assertIn(r"^\/qrpay\/admin(?:\/|$)", source)
+
+    def test_user_sidebar_payment_links_are_collapsed(self):
+        source = (
+            ROOT / "cloud-deploy" / "public" / "inject" / "zteapi-floating-doc.js"
+        ).read_text(encoding="utf-8")
+
+        self.assertIn("setPaymentMainLabel", source)
+        self.assertIn("zteapiPaymentHidden", source)
+        self.assertIn('"充值/订阅"', source)
 
 
 if __name__ == "__main__":
