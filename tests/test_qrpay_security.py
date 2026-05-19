@@ -135,6 +135,30 @@ class QrpaySecurityTests(unittest.TestCase):
         self.assertIn('src="https://cdn.example/wechat-fixed.png"', html)
         self.assertIn('href="/qrpay/api/orders/zqr_20260519safe/qr.png?download=1"', html)
 
+    def test_render_pay_page_shows_wechat_receipt_image_at_scan_size(self):
+        row = {
+            "id": 1,
+            "out_trade_no": "zqr_20260519safe",
+            "amount": Decimal("10.00"),
+            "pay_amount": Decimal("10.00"),
+            "payment_type": "wechat_code",
+            "order_type": "balance",
+            "status": "PENDING",
+            "pay_url": "/qrpay/pay/zqr_20260519safe",
+            "expires_at": None,
+            "paid_at": None,
+            "completed_at": None,
+            "plan_id": None,
+            "subscription_group_id": None,
+            "subscription_days": None,
+        }
+        with patch.object(self.app.settings, "wechat_qr_image_url", "https://cdn.example/wechat-fixed.png"):
+            html = self.app.render_pay_page(row)
+        self.assertIn(".qr-wrap { width:min(460px,100%);", html)
+        self.assertIn(".qr { width:100%; max-width:432px; height:auto;", html)
+        self.assertNotIn("width:188px", html)
+        self.assertNotIn("width:132px", html)
+
     def test_public_order_payload_includes_wechat_fixed_qr_image_url(self):
         row = {
             "id": 1,

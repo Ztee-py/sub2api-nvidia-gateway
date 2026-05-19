@@ -1281,16 +1281,16 @@ def render_pay_page(row: dict[str, Any]) -> str:
     .pay-icon {{ display:inline-grid; place-items:center; width:34px; height:34px; border-radius:8px; color:#fff; background:var(--wechat); font-weight:900; }}
     .brand strong {{ font-size:22px; }}
     .card {{ min-height:660px; display:grid; place-items:center; background:#fff; border-radius:10px; padding:42px 18px 54px; box-shadow:0 1px 2px rgba(15,23,42,.04); }}
-    .inner {{ width:min(520px,100%); text-align:center; }}
+    .inner {{ width:min(620px,100%); text-align:center; }}
     .order-pill {{ display:inline-flex; align-items:center; gap:24px; max-width:100%; padding:14px 20px; border-radius:6px; background:#fafafa; color:#8b95a1; font-size:18px; }}
     .order-pill b {{ color:#8b95a1; font-weight:600; word-break:break-all; }}
     .goods {{ margin:28px 0 24px; color:#8b95a1; font-size:14px; }}
     .divider {{ height:1px; background:#edf0f3; margin:0 0 20px; }}
     .amount {{ color:#3d6df6; font-size:36px; font-weight:900; letter-spacing:0; margin:6px 0 10px; }}
     .amount span {{ font-size:20px; margin-left:4px; }}
-    .qr-wrap {{ width:188px; margin:0 auto; padding:12px 12px 10px; background:var(--wechat); color:#fff; }}
-    .qr-title {{ font-size:15px; font-weight:800; margin:0 0 10px; }}
-    .qr {{ width:132px; height:132px; display:block; object-fit:contain; margin:0 auto; background:#fff; border-radius:4px; }}
+    .qr-wrap {{ width:min(460px,100%); margin:0 auto; padding:14px; background:#fff; color:var(--text); border:1px solid #e5e7eb; border-radius:12px; box-shadow:0 10px 30px rgba(15,23,42,.08); }}
+    .qr-title {{ font-size:16px; font-weight:900; margin:0 0 12px; color:#16a34a; }}
+    .qr {{ width:100%; max-width:432px; height:auto; max-height:70vh; display:block; object-fit:contain; margin:0 auto; background:#fff; border-radius:8px; }}
     .qr-footer {{ display:flex; align-items:center; justify-content:center; gap:6px; color:#4b5563; font-size:18px; margin-top:14px; }}
     .qr-footer .mini {{ display:inline-grid; place-items:center; width:22px; height:22px; border-radius:50%; color:#fff; background:var(--wechat); font-size:13px; font-weight:900; }}
     .must-pay {{ margin:30px 0 0; color:red; font-size:24px; font-weight:900; line-height:1.45; }}
@@ -1311,6 +1311,8 @@ def render_pay_page(row: dict[str, Any]) -> str:
       .card {{ min-height:0; padding:26px 14px 34px; }}
       .order-pill {{ font-size:14px; gap:10px; align-items:flex-start; text-align:left; }}
       .amount {{ font-size:32px; }}
+      .qr-wrap {{ width:min(430px,100%); padding:10px; }}
+      .qr {{ max-width:100%; max-height:none; }}
       .mobile-actions, .mobile-tip {{ display:grid; }}
       .must-pay {{ font-size:20px; }}
       .countdown {{ font-size:18px; }}
