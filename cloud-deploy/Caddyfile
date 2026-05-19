@@ -57,7 +57,7 @@
 	@legacy_payment path /payment /payment/
 	handle @legacy_payment {
 		header Cache-Control "no-store"
-		redir /purchase 302
+		redir https://{$PUBLIC_DOMAIN}/purchase 302
 	}
 
 	@qrpay_pages path /purchase /orders /subscriptions
