@@ -13,7 +13,7 @@ mkdir -p data postgres_data redis_data adapter_data backups caddy_data caddy_con
 docker compose pull
 docker compose build nvidia-adapter html-injector qrpay-bridge
 docker compose up -d --remove-orphans
-docker compose restart caddy
+docker compose up -d --force-recreate caddy
 
 echo
 docker compose ps

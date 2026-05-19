@@ -16,8 +16,8 @@ docker compose build qrpay-bridge html-injector
 docker compose up -d qrpay-bridge html-injector
 
 echo
-echo "== Restart Caddy =="
-docker compose restart caddy
+echo "== Recreate Caddy =="
+docker compose up -d --force-recreate caddy
 
 echo
 echo "== Service status =="
