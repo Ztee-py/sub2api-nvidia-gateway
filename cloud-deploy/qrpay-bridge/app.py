@@ -1781,8 +1781,8 @@ INDEX_HTML = """<!doctype html>
       const cookies = Object.fromEntries(document.cookie.split(';').map(v => v.trim()).filter(Boolean).map(v => { const i = v.indexOf('='); return i === -1 ? [decodeURIComponent(v), ''] : [decodeURIComponent(v.slice(0, i)), decodeURIComponent(v.slice(i + 1))]; }));
       const stores = [localStorage, sessionStorage];
       const preferred = ['token','access_token','auth_token','jwt','sub2api_token','accessToken','authToken'];
-      for (const k of preferred) if (cookies[k]) return cookies[k].replace(/^Bearer\s+/i,'');
-      for (const s of stores) for (const k of preferred) { const v = s.getItem(k); if (v) return v.replace(/^Bearer\s+/i,''); }
+      for (const k of preferred) if (cookies[k]) return cookies[k].replace(/^Bearer\\s+/i,'');
+      for (const s of stores) for (const k of preferred) { const v = s.getItem(k); if (v) return v.replace(/^Bearer\\s+/i,''); }
       for (const s of stores) for (let i=0;i<s.length;i++) { const v = s.getItem(s.key(i)); if (v && /^eyJ/.test(v)) return v; }
       return '';
     }
@@ -1839,7 +1839,7 @@ INDEX_HTML = """<!doctype html>
     }
     function renderConfig() {
       const quick = state.config.quick_amounts || [];
-      document.getElementById('amounts').innerHTML = quick.map(v => `<button class="amount ${Number(state.amount)===Number(v)?'active':''}" data-amount="${html(v)}">${money(v).replace(/\.00$/,'')}</button>`).join('');
+      document.getElementById('amounts').innerHTML = quick.map(v => `<button class="amount ${Number(state.amount)===Number(v)?'active':''}" data-amount="${html(v)}">${money(v).replace(/\\.00$/,'')}</button>`).join('');
       document.querySelectorAll('.amount').forEach(b => b.onclick = () => { state.amount = Number(b.dataset.amount); document.getElementById('customAmount').value=''; renderConfig(); });
       if (!state.method && state.config.methods[0]) state.method = state.config.methods[0].id;
       document.getElementById('methods').innerHTML = (state.config.methods || []).map(m => `<button class="method ${state.method===m.id?'active':''}" data-method="${html(m.id)}"><span class="wechat-mark">✓</span>${html(m.label)}</button>`).join('');
