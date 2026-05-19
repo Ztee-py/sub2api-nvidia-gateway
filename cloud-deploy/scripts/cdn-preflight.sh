@@ -76,7 +76,7 @@ if [[ -n "${ORIGIN_IP}" ]]; then
 fi
 
 print_section "Dynamic routes must not cache"
-assert_header_contains "/" "HEAD" "Cache-Control" "no-cache"
+assert_header_contains "/" "HEAD" "Cache-Control" "no-store"
 assert_header_contains "/payment" "HEAD" "Cache-Control" "no-store"
 assert_header_contains "/qrpay/health" "GET" "Cache-Control" "no-store"
 assert_header_contains "/qrpay/api/watch/public-status" "GET" "Cache-Control" "no-store"

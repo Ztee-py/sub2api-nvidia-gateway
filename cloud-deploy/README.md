@@ -52,6 +52,25 @@ BASE_URL=https://Zteapi.com ORIGIN_IP=YOUR_SERVER_IP EXPECTED_CDN=hongkong ./scr
 
 Use `EXPECTED_CDN=cloudflare` after switching to Cloudflare. See [CDN cutover runbook](../docs/cdn-cutover.md) for cache, WAF and origin-lockdown rules.
 
+For the prepared CNMCDN site, status and expiry checks can be run with:
+
+```bash
+CNMCDN_SITE_ID=90352 \
+CNMCDN_CNAME=drknxj52.svipcdn.cn \
+CNMCDN_EXPIRES_AT='2026-06-15 17:07:34' \
+ORIGIN_IP=38.97.254.150 \
+./scripts/cdn-status.sh
+```
+
+Cloudflare fallback DNS record updates are scripted, but only after the Cloudflare account, zone, nameservers and API token exist:
+
+```bash
+CF_API_TOKEN='cloudflare-api-token-with-dns-edit' \
+CF_ZONE_NAME=Zteapi.com \
+ORIGIN_IP=38.97.254.150 \
+./scripts/cloudflare-fallback.sh --apply
+```
+
 ## 3. Prepare Secrets
 
 Create `cloud-deploy/.env` from `.env.example` and fill in real values:

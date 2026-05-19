@@ -90,15 +90,28 @@ class StaticUiInjectionTests(unittest.TestCase):
         self.assertIn("handle @static_assets", caddy)
         self.assertIn('header Cache-Control "no-store"', caddy)
         self.assertIn('header Cache-Control "public, max-age=300, stale-while-revalidate=60"', caddy)
+        self.assertIn("handle {\n\t\theader Cache-Control \"no-store\"", caddy)
 
     def test_cdn_preflight_checks_dynamic_routes(self):
         source = (ROOT / "cloud-deploy" / "scripts" / "cdn-preflight.sh").read_text(encoding="utf-8")
 
+        self.assertIn('assert_header_contains "/" "HEAD" "Cache-Control" "no-store"', source)
         self.assertIn('assert_header_contains "/payment" "HEAD" "Cache-Control" "no-store"', source)
         self.assertIn('assert_header_contains "/qrpay/health" "GET" "Cache-Control" "no-store"', source)
         self.assertIn('assert_header_contains "/qrpay/api/watch/public-status" "GET" "Cache-Control" "no-store"', source)
         self.assertIn("EXPECTED_CDN", source)
         self.assertIn("ORIGIN_IP", source)
+
+    def test_cdn_status_and_cloudflare_fallback_scripts_exist(self):
+        status = (ROOT / "cloud-deploy" / "scripts" / "cdn-status.sh").read_text(encoding="utf-8")
+        fallback = (ROOT / "cloud-deploy" / "scripts" / "cloudflare-fallback.sh").read_text(encoding="utf-8")
+
+        self.assertIn("CNMCDN_EXPIRES_AT", status)
+        self.assertIn("AUTO_CLOUDFLARE_FALLBACK", status)
+        self.assertIn("cloudflare-fallback.sh --apply", status)
+        self.assertIn("CF_API_TOKEN", fallback)
+        self.assertIn("proxied", fallback)
+        self.assertIn("dry-run only", fallback)
 
 
 if __name__ == "__main__":

@@ -93,7 +93,10 @@
 	}
 
 	handle {
+		header Cache-Control "no-store"
 		reverse_proxy html-injector:8090 {
+			header_down -Cache-Control
+			header_down Cache-Control "no-store"
 			flush_interval -1
 		}
 	}
