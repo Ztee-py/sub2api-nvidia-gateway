@@ -35,19 +35,25 @@ class StaticUiInjectionTests(unittest.TestCase):
 
         self.assertIn(r"^\/qrpay\/admin(?:\/|$)", source)
 
-    def test_user_sidebar_payment_links_are_collapsed(self):
+    def test_user_sidebar_payment_links_keep_recharge_and_orders(self):
         source = (
             ROOT / "cloud-deploy" / "public" / "inject" / "zteapi-floating-doc.js"
         ).read_text(encoding="utf-8")
 
         self.assertIn("setPaymentMainLabel", source)
+        self.assertIn("setOrdersMainLabel", source)
+        self.assertIn("createUserPaymentLink", source)
         self.assertIn("MAIN_PAYMENT_LABEL", source)
+        self.assertIn("ORDER_PAYMENT_LABEL", source)
         self.assertIn("paymentLinkRole", source)
         self.assertIn("sidebarPaymentScore", source)
         self.assertIn('path === "/payment"', source)
+        self.assertIn('path === "/orders"', source)
         self.assertIn("zteapiPaymentHidden", source)
         self.assertIn("zteapiQrpayNavigationBound", source)
+        self.assertIn("zteapiSynthPaymentLink", source)
         self.assertIn(r'"\u5145\u503c/\u8ba2\u9605"', source)
+        self.assertIn(r'"\u6211\u7684\u8ba2\u5355"', source)
         self.assertIn("SIDEBAR_PAYMENT_SELECTOR", source)
         self.assertIn("collectSidebarPaymentLinks", source)
         self.assertIn("handlePaymentNavigationClick", source)
@@ -60,6 +66,8 @@ class StaticUiInjectionTests(unittest.TestCase):
         self.assertIn("setDashboardPurchaseChrome", source)
         self.assertIn("zteapiActivePage", source)
         self.assertIn("zteapiPurchaseLink", source)
+        self.assertIn("zteapiOrdersLink", source)
+        self.assertIn('role === "orders" ? "orders" : "purchase"', source)
         self.assertIn('data-zteapi-qrpay-subpage="1"', source)
         self.assertIn("zteapi-qrpay-frame", source)
         self.assertIn("isNativeSub2ApiPaymentView", source)

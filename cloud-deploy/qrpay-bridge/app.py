@@ -99,6 +99,7 @@ class Settings:
     watcher_max_retries = env_int("QRPAY_WATCHER_MAX_RETRIES", 2)
     watcher_resend_interval = env_int("QRPAY_WATCHER_RESEND_INTERVAL", 10)
     watcher_stale_after_seconds = env_int("QRPAY_WATCHER_STALE_AFTER_SECONDS", 120)
+    watcher_active_grace_seconds = env_int("QRPAY_WATCHER_ACTIVE_GRACE_SECONDS", 30)
     alert_webhook_url = os.environ.get("QRPAY_ALERT_WEBHOOK_URL", "").strip()
     alert_webhook_secret = os.environ.get("QRPAY_ALERT_WEBHOOK_SECRET", "").strip()
     max_request_body_bytes = env_int("QRPAY_MAX_REQUEST_BODY_BYTES", 512 * 1024)
@@ -178,6 +179,24 @@ def public_base(request: Request) -> str:
 
 def now_utc() -> datetime:
     return datetime.now(timezone.utc)
+
+
+def parse_optional_datetime(value: Any) -> datetime | None:
+    if value is None:
+        return None
+    if isinstance(value, datetime):
+        parsed = value
+    else:
+        raw = str(value).strip()
+        if not raw:
+            return None
+        try:
+            parsed = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+        except ValueError:
+            return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
 
 
 def json_response(data: Any) -> JSONResponse:
@@ -791,6 +810,35 @@ def list_admin_qr_orders(
     return [admin_order_payload(row) for row in rows]
 
 
+def pending_wechat_watch_state(conn) -> dict[str, Any]:
+    row = conn.execute(
+        """
+        SELECT COUNT(*)::int AS pending_count,
+               MIN(created_at) AS earliest_created_at,
+               MIN(expires_at) AS nearest_expires_at,
+               ARRAY_AGG(pay_amount ORDER BY id ASC) AS pay_amounts
+          FROM payment_orders
+         WHERE payment_type='wechat_code'
+           AND status='PENDING'
+           AND expires_at > NOW()
+        """
+    ).fetchone()
+    pending_count = int((row or {}).get("pending_count") or 0)
+    earliest_created_at = (row or {}).get("earliest_created_at")
+    nearest_expires_at = (row or {}).get("nearest_expires_at")
+    active = pending_count > 0
+    return {
+        "active": active,
+        "pending_count": pending_count,
+        "earliest_created_at": earliest_created_at.isoformat() if earliest_created_at else None,
+        "nearest_expires_at": nearest_expires_at.isoformat() if nearest_expires_at else None,
+        "active_since": earliest_created_at.isoformat() if earliest_created_at else None,
+        "grace_seconds": settings.watcher_active_grace_seconds,
+        "poll_after_seconds": 1 if active else settings.watcher_interval_seconds,
+        "pay_amounts": [decimal_to_float(item) for item in ((row or {}).get("pay_amounts") or [])],
+    }
+
+
 def create_payment_order(conn, req: dict[str, Any], user: dict[str, Any], request: Request) -> dict[str, Any]:
     method = str(req.get("payment_type") or "").strip()
     assert_method(method)
@@ -1035,6 +1083,23 @@ def confirm_payment(
             {"expected": order["payment_type"], "actual": provider, "trade_no": provider_trade_no},
         )
         raise HTTPException(400, "payment provider mismatch")
+    observed_at = parse_optional_datetime(raw_payload.get("observed_at"))
+    order_created_at = parse_optional_datetime(order.get("created_at"))
+    if provider == "wechat_code" and observed_at and order_created_at:
+        earliest_allowed = order_created_at - timedelta(seconds=settings.watcher_active_grace_seconds)
+        if observed_at < earliest_allowed:
+            audit(
+                conn,
+                order["id"],
+                "PAYMENT_RECEIPT_TOO_OLD",
+                {
+                    "provider": provider,
+                    "trade_no": provider_trade_no,
+                    "observed_at": observed_at.isoformat(),
+                    "order_created_at": order_created_at.isoformat(),
+                },
+            )
+            raise HTTPException(409, "payment receipt is older than the order")
     if not is_amount_match(order["pay_amount"], paid_amount_decimal):
         audit(conn, order["id"], "PAYMENT_AMOUNT_MISMATCH", {"expected": str(order["pay_amount"]), "paid": str(paid_amount_decimal)})
         raise HTTPException(400, "payment amount mismatch")
@@ -1481,6 +1546,8 @@ async def watch_alipay_bill(request: Request, x_qrpay_secret: str | None = Heade
 async def watch_wechat_receipt(request: Request, x_qrpay_secret: str | None = Header(default=None)) -> JSONResponse:
     require_shared_secret(x_qrpay_secret, settings.watcher_secret, "watcher")
     body = await request.json()
+    if not parse_optional_datetime(body.get("observed_at")):
+        raise HTTPException(400, "wechat receipt observed_at is required")
     out_trade_no = (body.get("out_trade_no") or body.get("order_no") or "").strip()
     amount = body.get("amount") or body.get("paid_amount")
     paid_amount = parse_money_or_400(amount, "amount")
@@ -1599,6 +1666,16 @@ def public_watch_status() -> JSONResponse:
         summary = wechat_watcher_summary(conn)
         conn.commit()
     return json_response(summary)
+
+
+@app.get("/api/watch/pending")
+def watch_pending(x_qrpay_secret: str | None = Header(default=None)) -> JSONResponse:
+    require_shared_secret(x_qrpay_secret, settings.watcher_secret, "watcher")
+    with db_conn() as conn:
+        expire_pending_orders(conn)
+        state = pending_wechat_watch_state(conn)
+        conn.commit()
+    return json_response(state)
 
 
 @app.get("/api/watch/status")

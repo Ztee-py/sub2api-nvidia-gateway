@@ -48,6 +48,14 @@ Do not commit `wechat_windows_watcher.env`.
 
 This source is receipt-only: it polls the already-decrypted message SQLite files in place, parses WeChat receipt/transfer records, keeps a small local `seen_receipts` cache, and sends only the payment event to `qrpay-bridge`. It does not export chats, images, voice, video, or full WeChat data to the server. The local cache is pruned by `WECHAT_WATCHER_STATE_RETENTION_DAYS`.
 
+Production mode is intentionally idle-first. The Windows process stays running, but before each scan it asks:
+
+```text
+GET https://Zteapi.com/qrpay/api/watch/pending
+```
+
+If there are no pending WeChat orders, it does not read the WeChat database and only sends low-frequency heartbeats. After a user clicks confirm payment and the server creates a pending order, this endpoint becomes active, the watcher starts scanning, and it returns to idle after the order is completed, cancelled, or expired. `WECHAT_WATCHER_IDLE_POLL_INTERVAL` controls the idle heartbeat loop; `WECHAT_WATCHER_POLL_INTERVAL` controls the active scan loop. Set `WECHAT_WATCHER_ALWAYS_SCAN=true` only for legacy debugging.
+
 OCR remains a fallback. To use it, set `WECHAT_WATCHER_SOURCE=wechat-window-ocr`. `WECHAT_WINDOW_OCR_NO_FOREGROUND=false` first tries to capture the WeChat window in the background. If that capture is blank, it falls back to bringing WeChat forward and reading the visible window.
 
 ## Parser Smoke Test
@@ -76,7 +84,8 @@ Start with dry run:
 
 Important behavior:
 
-- On first startup it scans current source rows and marks old matching receipts as seen.
+- On first startup in dry run it scans current source rows and marks old matching receipts as seen.
+- In real production mode, it first waits for `/api/watch/pending` to report an active pending order before reading WeChat data.
 - It does not confirm orders in `-DryRun`.
 - Keep this window open, create a tiny WeChat test order, pay it, and watch for `DRY-RUN match amount=...`.
 
@@ -140,7 +149,7 @@ To remove the logon task:
 
 Sub2API user login in the browser cannot and should not start this watcher. The watcher belongs to the receiving WeChat account's Windows machine. Once the scheduled task is installed, it starts with that Windows account, not with each website user.
 
-This is the intended "automatic realtime" mode for production: the local Windows account logs in, WeChat stays logged in, `wechat-decrypt` keeps its decrypted message output available, and the scheduled watcher continuously posts heartbeats. The user payment center shows those heartbeats as 微信监听正常/异常.
+This is the intended "automatic realtime" mode for production: the local Windows account logs in, WeChat stays logged in, `wechat-decrypt` keeps its decrypted message output available, and the scheduled watcher continuously posts heartbeats. The user payment center shows those heartbeats as 微信监听正常/异常. When no user is paying, the watcher is idle and does not scan the local WeChat DB; when an order is pending, it scans until the closed loop finishes.
 
 ## Limitations
 

@@ -13,8 +13,12 @@ from wechat_windows_watcher import (  # noqa: E402
     DEFAULT_WECHAT_DECRYPT_DB_GLOB,
     WeChatDecryptDbSource,
     decode_wechat_content,
+    iso_from_timestamp_candidate,
+    parse_iso_datetime,
     parse_receipt,
     parse_wechat_receipt,
+    pending_watch_state,
+    process_receipts,
     split_globs,
 )
 
@@ -165,6 +169,73 @@ class WeChatWindowsWatcherTest(unittest.TestCase):
         raw = "微信支付 收款到账0.01元".encode("utf-8")
         compressed = zstd.ZstdCompressor().compress(raw)
         self.assertEqual(decode_wechat_content(compressed, 4), "微信支付收款到账0.01元")
+
+    def test_process_receipts_skips_events_older_than_active_order_window(self):
+        class DummyState:
+            def has(self, fingerprint):
+                return False
+
+            def mark(self, receipt, status):
+                raise AssertionError("old receipt should not be marked or sent")
+
+        class DummyArgs:
+            process_existing = False
+            send_raw_text = False
+            dry_run = False
+
+        old_event = TextEvent(
+            "unit-test",
+            "row-old",
+            "WeChat receipt amount 0.01",
+            "2026-05-17T19:59:00+08:00",
+        )
+        scanned, matched, sent = process_receipts(
+            DummyArgs(),
+            DummyState(),
+            [old_event],
+            active_since=parse_iso_datetime("2026-05-17T20:00:00+08:00"),
+        )
+
+        self.assertEqual((scanned, matched, sent), (1, 0, 0))
+
+    def test_process_receipts_skips_events_without_timestamp_when_active_window_is_set(self):
+        class DummyState:
+            def has(self, fingerprint):
+                raise AssertionError("untimed receipt should not be parsed after active window filter")
+
+            def mark(self, receipt, status):
+                raise AssertionError("untimed receipt should not be marked or sent")
+
+        class DummyArgs:
+            process_existing = False
+            send_raw_text = False
+            dry_run = False
+
+        scanned, matched, sent = process_receipts(
+            DummyArgs(),
+            DummyState(),
+            [TextEvent("unit-test", "row-untimed", "微信收款助手 收款到账0.01元", "")],
+            active_since=parse_iso_datetime("2026-05-17T20:00:00+08:00"),
+        )
+
+        self.assertEqual((scanned, matched, sent), (1, 0, 0))
+
+    def test_pending_watch_state_does_not_call_bridge_when_always_scan(self):
+        class DummyArgs:
+            always_scan = True
+            dry_run = False
+            poll_interval = 2
+
+        state = pending_watch_state(DummyArgs())
+
+        self.assertTrue(state["active"])
+        self.assertEqual(state["pending_count"], 1)
+
+    def test_iso_from_timestamp_candidate_accepts_windows_filetime(self):
+        parsed = iso_from_timestamp_candidate(133485408000000000)
+
+        self.assertIsNotNone(parsed)
+        self.assertTrue(parsed.startswith("2024-01-01T"))
 
 
 if __name__ == "__main__":

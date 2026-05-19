@@ -84,6 +84,59 @@ def now_iso() -> str:
     return datetime.now(timezone.utc).astimezone().isoformat(timespec="seconds")
 
 
+def parse_iso_datetime(value: str | None) -> datetime | None:
+    if not value:
+        return None
+    try:
+        normalized = value.replace("Z", "+00:00")
+        parsed = datetime.fromisoformat(normalized)
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone()
+
+
+def event_datetime(value: str | None) -> datetime | None:
+    parsed = parse_iso_datetime(value)
+    if not parsed:
+        return None
+    return parsed
+
+
+def iso_from_timestamp_candidate(value: object) -> str | None:
+    if value is None:
+        return None
+    if isinstance(value, bytes):
+        try:
+            value = value.decode("utf-8", errors="ignore")
+        except Exception:
+            return None
+    raw = str(value).strip()
+    if not raw:
+        return None
+    parsed = parse_iso_datetime(raw)
+    if parsed:
+        return parsed.isoformat(timespec="seconds")
+    try:
+        number = float(raw)
+    except (TypeError, ValueError):
+        return None
+    if number <= 0:
+        return None
+    try:
+        if number > 10_000_000_000_000_000:
+            base = datetime(1601, 1, 1, tzinfo=timezone.utc)
+            parsed = base + timedelta(microseconds=number / 10)
+        elif number > 10_000_000_000:
+            parsed = datetime.fromtimestamp(number / 1000, timezone.utc)
+        else:
+            parsed = datetime.fromtimestamp(number, timezone.utc)
+    except (OSError, OverflowError, ValueError):
+        return None
+    return parsed.astimezone().isoformat(timespec="seconds")
+
+
 def normalize_text(text: str) -> str:
     text = text.replace("\x00", " ")
     text = (
@@ -339,6 +392,15 @@ class NotificationDbSource:
         except sqlite3.DatabaseError:
             return
         for row in rows:
+            observed_at = ""
+            for col in columns:
+                lower_col = col.lower()
+                if not any(token in lower_col for token in ("time", "date", "created", "arrival", "modified")):
+                    continue
+                parsed_time = iso_from_timestamp_candidate(row[col])
+                if parsed_time:
+                    observed_at = parsed_time
+                    break
             parts = []
             for col in columns:
                 value = row[col]
@@ -356,7 +418,7 @@ class NotificationDbSource:
                     source="windows-notification-db",
                     source_id=f"{table}:{row['__rowid__']}",
                     text=text,
-                    observed_at=now_iso(),
+                    observed_at=observed_at,
                 )
 
 
@@ -664,6 +726,28 @@ def bridge_post(args: argparse.Namespace, path: str, payload: dict) -> dict:
     return json.loads(raw)
 
 
+def bridge_get(args: argparse.Namespace, path: str) -> dict:
+    if not args.bridge_url or not args.watcher_secret:
+        raise RuntimeError("QRPAY_BRIDGE_URL and QRPAY_WATCHER_SECRET are required for bridge requests")
+    req = urllib.request.Request(
+        args.bridge_url.rstrip("/") + path,
+        headers={"Accept": "application/json", "X-Qrpay-Secret": args.watcher_secret},
+        method="GET",
+    )
+    raw = urllib.request.urlopen(req, timeout=args.timeout).read().decode("utf-8")
+    return json.loads(raw)
+
+
+def pending_watch_state(args: argparse.Namespace) -> dict:
+    if args.always_scan or args.dry_run:
+        return {"active": True, "pending_count": 1, "active_since": None, "poll_after_seconds": args.poll_interval}
+    payload = bridge_get(args, "/api/watch/pending")
+    data = payload.get("data") if isinstance(payload, dict) else None
+    if not isinstance(data, dict):
+        raise RuntimeError("invalid pending watch response")
+    return data
+
+
 def send_heartbeat(args: argparse.Namespace, ok: bool, msg: str, payload: dict | None = None) -> None:
     if args.no_heartbeat or not args.bridge_url or not args.watcher_secret:
         return
@@ -704,12 +788,17 @@ def process_receipts(
     state: StateStore,
     events: Iterable[TextEvent],
     warmup: bool = False,
+    active_since: datetime | None = None,
 ) -> tuple[int, int, int]:
     scanned = 0
     matched = 0
     sent = 0
     for event in events:
         scanned += 1
+        if active_since:
+            observed_at = event_datetime(event.observed_at)
+            if not observed_at or observed_at < active_since:
+                continue
         receipt = parse_receipt(event)
         if not receipt:
             continue
@@ -786,6 +875,7 @@ def build_args() -> argparse.Namespace:
     parser.add_argument("--state-path", default=env("WECHAT_WATCHER_STATE", str(default_state_path())))
     parser.add_argument("--state-retention-days", type=int, default=int(env("WECHAT_WATCHER_STATE_RETENTION_DAYS", "30")))
     parser.add_argument("--poll-interval", type=int, default=int(env("WECHAT_WATCHER_POLL_INTERVAL", "2")))
+    parser.add_argument("--idle-poll-interval", type=int, default=int(env("WECHAT_WATCHER_IDLE_POLL_INTERVAL", "30")))
     parser.add_argument("--heartbeat-interval", type=int, default=int(env("WECHAT_WATCHER_HEARTBEAT_INTERVAL", "30")))
     parser.add_argument("--timeout", type=int, default=int(env("WECHAT_WATCHER_TIMEOUT_SECONDS", "15")))
     parser.add_argument("--max-rows-per-table", type=int, default=int(env("WECHAT_WATCHER_MAX_ROWS", "500")))
@@ -793,6 +883,7 @@ def build_args() -> argparse.Namespace:
     parser.add_argument("--dry-run", action="store_true", help="Parse and log matches without confirming orders.")
     parser.add_argument("--send-raw-text", action="store_true", help="Include a short raw notification excerpt in bridge payloads.")
     parser.add_argument("--no-heartbeat", action="store_true")
+    parser.add_argument("--always-scan", action="store_true", default=env_flag("WECHAT_WATCHER_ALWAYS_SCAN", False))
     parser.add_argument("--once", action="store_true")
     parser.add_argument("--test-text", help="Parse one literal notification text and exit.")
     args = parser.parse_args()
@@ -815,7 +906,7 @@ def main() -> None:
     state = StateStore(Path(args.state_path), args.state_retention_days)
     last_heartbeat = 0.0
     try:
-        if not args.process_existing and args.source in {"notification-db", "wechat-decrypt-db", "file-tail"}:
+        if (args.always_scan or args.dry_run) and not args.process_existing and args.source in {"notification-db", "wechat-decrypt-db", "file-tail"}:
             scanned, matched, sent = process_receipts(args, state, source.poll(), warmup=True)
             msg = f"initialized; marked existing matches as seen: scanned={scanned} matched={matched}"
             print(msg, flush=True)
@@ -823,19 +914,34 @@ def main() -> None:
             if args.once:
                 return
         while True:
+            watch_state = {"active": False, "pending_count": 0}
             try:
-                scanned, matched, sent = process_receipts(args, state, source.poll())
+                watch_state = pending_watch_state(args)
+                active = bool(watch_state.get("active"))
+                active_since = parse_iso_datetime(str(watch_state.get("active_since") or "")) if active else None
+                if active_since:
+                    try:
+                        grace_seconds = max(0, int(watch_state.get("grace_seconds") or 0))
+                    except (TypeError, ValueError):
+                        grace_seconds = 0
+                    active_since = active_since - timedelta(seconds=grace_seconds)
+                scanned = matched = sent = 0
+                if active:
+                    scanned, matched, sent = process_receipts(args, state, source.poll(), active_since=active_since)
                 now = time.time()
                 if now - last_heartbeat >= max(5, args.heartbeat_interval):
-                    msg = f"alive; scanned={scanned} matched={matched} sent={sent}"
-                    send_heartbeat(args, True, msg, {"source": args.source, "dry_run": args.dry_run})
+                    pending_count = int(watch_state.get("pending_count") or 0)
+                    mode = "active" if active else "idle"
+                    msg = f"{mode}; pending={pending_count} scanned={scanned} matched={matched} sent={sent}"
+                    send_heartbeat(args, True, msg, {"source": args.source, "dry_run": args.dry_run, "watch_state": watch_state})
                     last_heartbeat = now
             except Exception as exc:
                 print(f"watcher error: {exc}", flush=True)
                 send_heartbeat(args, False, str(exc), {"source": args.source, "error": type(exc).__name__})
             if args.once:
                 break
-            time.sleep(max(1, args.poll_interval))
+            sleep_seconds = args.poll_interval if watch_state.get("active") else args.idle_poll_interval
+            time.sleep(max(1, int(sleep_seconds)))
     finally:
         state.close()
 

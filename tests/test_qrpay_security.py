@@ -73,6 +73,14 @@ class DummyResult:
         return self.value
 
 
+class PendingWatchConn:
+    def __init__(self, row):
+        self.row = row
+
+    def execute(self, sql, params=()):
+        return DummyResult(self.row)
+
+
 class QrpaySecurityTests(unittest.TestCase):
     def setUp(self):
         self.app = load_qrpay_app()
@@ -214,6 +222,79 @@ class QrpaySecurityTests(unittest.TestCase):
         self.assertTrue(self.app.parse_bool("1"))
         self.assertFalse(self.app.parse_bool(False))
         self.assertFalse(self.app.parse_bool("no"))
+
+    def test_pending_wechat_watch_state_is_idle_without_pending_orders(self):
+        state = self.app.pending_wechat_watch_state(
+            PendingWatchConn(
+                {
+                    "pending_count": 0,
+                    "earliest_created_at": None,
+                    "nearest_expires_at": None,
+                    "pay_amounts": None,
+                }
+            )
+        )
+
+        self.assertFalse(state["active"])
+        self.assertEqual(state["pending_count"], 0)
+        self.assertEqual(state["poll_after_seconds"], self.app.settings.watcher_interval_seconds)
+
+    def test_pending_wechat_watch_state_reports_active_window(self):
+        created_at = self.app.now_utc()
+        expires_at = created_at + timedelta(minutes=5)
+
+        state = self.app.pending_wechat_watch_state(
+            PendingWatchConn(
+                {
+                    "pending_count": 2,
+                    "earliest_created_at": created_at,
+                    "nearest_expires_at": expires_at,
+                    "pay_amounts": [Decimal("10.00"), Decimal("10.01")],
+                }
+            )
+        )
+
+        self.assertTrue(state["active"])
+        self.assertEqual(state["pending_count"], 2)
+        self.assertEqual(state["active_since"], created_at.isoformat())
+        self.assertEqual(state["pay_amounts"], [10.0, 10.01])
+
+    def test_wechat_confirm_rejects_receipt_older_than_order(self):
+        order_created_at = self.app.now_utc()
+        order = {
+            "id": 31,
+            "out_trade_no": "zqr_20260519safe",
+            "amount": Decimal("0.01"),
+            "pay_amount": Decimal("0.01"),
+            "payment_type": "wechat_code",
+            "order_type": "balance",
+            "status": "PENDING",
+            "pay_url": "/qrpay/pay/zqr_20260519safe",
+            "expires_at": order_created_at + timedelta(minutes=5),
+            "created_at": order_created_at,
+            "paid_at": None,
+            "completed_at": None,
+            "plan_id": None,
+            "subscription_group_id": None,
+            "subscription_days": None,
+            "user_id": 7,
+        }
+        conn = DummyConn(self.app, order)
+
+        with self.assertRaises(HTTPException) as ctx:
+            self.app.confirm_payment(
+                conn,
+                "zqr_20260519safe",
+                "wechat_code",
+                "wechat-old-receipt",
+                "0.01",
+                "",
+                {"observed_at": (order_created_at - timedelta(minutes=3)).isoformat()},
+            )
+
+        self.assertEqual(ctx.exception.status_code, 409)
+        self.assertFalse(conn.updated_paid)
+        self.assertEqual(conn.audits[-1][1], "PAYMENT_RECEIPT_TOO_OLD")
 
     def test_manual_confirm_can_allow_expired_order_with_operator_note(self):
         order = {
