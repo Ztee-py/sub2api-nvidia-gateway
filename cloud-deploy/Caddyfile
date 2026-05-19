@@ -48,13 +48,18 @@
 
 	handle_path /qrpay* {
 		header Cache-Control "no-store"
-		reverse_proxy qrpay-bridge:8095
+		reverse_proxy qrpay-bridge:8095 {
+			header_down -Cache-Control
+			header_down Cache-Control "no-store"
+		}
 	}
 
 	@qrpay_pages path /purchase /payment /orders /subscriptions
 	handle @qrpay_pages {
 		header Cache-Control "no-store"
 		reverse_proxy html-injector:8090 {
+			header_down -Cache-Control
+			header_down Cache-Control "no-store"
 			flush_interval -1
 		}
 	}
@@ -63,6 +68,8 @@
 	handle @responses_api {
 		header Cache-Control "no-store"
 		reverse_proxy html-injector:8090 {
+			header_down -Cache-Control
+			header_down Cache-Control "no-store"
 			flush_interval -1
 		}
 	}
@@ -79,6 +86,8 @@
 	handle @sub2api_dynamic {
 		header Cache-Control "no-store"
 		reverse_proxy sub2api:8080 {
+			header_down -Cache-Control
+			header_down Cache-Control "no-store"
 			flush_interval -1
 		}
 	}
