@@ -247,6 +247,14 @@ def parse_int_or_400(value: Any, label: str) -> int:
         raise HTTPException(400, f"{label} must be an integer") from exc
 
 
+def parse_bool(value: Any) -> bool:
+    if isinstance(value, bool):
+        return value
+    if value is None:
+        return False
+    return str(value).strip().lower() in {"1", "true", "yes", "on"}
+
+
 def require_shared_secret(secret: str | None, expected: str, label: str) -> None:
     if not expected:
         raise HTTPException(503, f"{label} secret is not configured")
@@ -996,6 +1004,8 @@ def confirm_payment(
     paid_amount: str | int | float | Decimal,
     payer: str | None,
     raw_payload: dict[str, Any],
+    *,
+    allow_expired: bool = False,
 ) -> dict[str, Any]:
     out_trade_no = safe_order_no(out_trade_no)
     if provider not in QR_PAYMENT_METHODS and provider != "manual":
@@ -1009,11 +1019,24 @@ def confirm_payment(
         raise HTTPException(404, "order not found")
     if order["status"] == "COMPLETED":
         return public_order_payload(order)
-    if order["status"] not in {"PENDING", "PAID", "FAILED"}:
+    payable_statuses = {"PENDING", "PAID", "FAILED"}
+    if allow_expired and provider == "manual":
+        payable_statuses.add("EXPIRED")
+    if order["status"] not in payable_statuses:
         raise HTTPException(409, f"order is not payable in status {order['status']}")
     if order["expires_at"] and order["expires_at"] < now_utc() - timedelta(minutes=5):
-        audit(conn, order["id"], "PAYMENT_AFTER_EXPIRY", {"provider": provider, "trade_no": provider_trade_no})
-        raise HTTPException(409, "order is expired")
+        audit(
+            conn,
+            order["id"],
+            "PAYMENT_AFTER_EXPIRY",
+            {"provider": provider, "trade_no": provider_trade_no, "allow_expired": allow_expired},
+        )
+        if not allow_expired:
+            raise HTTPException(409, "order is expired")
+        if provider != "manual":
+            raise HTTPException(409, "expired orders can only be confirmed manually")
+        if not raw_payload.get("operator_note"):
+            raise HTTPException(400, "operator_note is required when confirming an expired order")
     if provider != "manual" and order["payment_type"] != provider:
         audit(
             conn,
@@ -1416,8 +1439,18 @@ async def admin_confirm(out_trade_no: str, request: Request, x_qrpay_secret: str
     paid_amount = parse_money_or_400(amount, "amount")
     provider = body.get("provider") or "manual"
     provider_trade_no = body.get("trade_no") or f"manual-{out_trade_no}"
+    allow_expired = parse_bool(body.get("allow_expired"))
     with db_conn() as conn:
-        result = confirm_payment(conn, out_trade_no, provider, provider_trade_no, paid_amount, body.get("payer") or "", bounded_json(body))
+        result = confirm_payment(
+            conn,
+            out_trade_no,
+            provider,
+            provider_trade_no,
+            paid_amount,
+            body.get("payer") or "",
+            bounded_json(body),
+            allow_expired=allow_expired,
+        )
         conn.commit()
     return json_response(result)
 

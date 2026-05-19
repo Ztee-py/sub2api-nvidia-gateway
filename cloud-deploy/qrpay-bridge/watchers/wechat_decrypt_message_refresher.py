@@ -65,7 +65,13 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Refresh wechat-decrypt message DB outputs for qrpay watcher.")
     parser.add_argument("--wechat-decrypt-app-dir", default=env("WECHAT_DECRYPT_APP_DIR"))
     parser.add_argument("--interval", type=float, default=float(env("WECHAT_DECRYPT_REFRESH_INTERVAL_SECONDS", "3")))
-    parser.add_argument("--patterns", default=env("WECHAT_DECRYPT_REFRESH_PATTERNS", "message/message_*.db,message/message_resource.db"))
+    parser.add_argument(
+        "--patterns",
+        default=env(
+            "WECHAT_DECRYPT_REFRESH_PATTERNS",
+            "message/message_*.db,message/biz_message_*.db,message/message_resource.db",
+        ),
+    )
     parser.add_argument("--once", action="store_true")
     args = parser.parse_args()
 

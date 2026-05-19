@@ -21,6 +21,11 @@ from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 from pathlib import Path
 from typing import Iterable
 
+try:
+    import zstandard as zstd
+except Exception:  # pragma: no cover - optional on legacy watcher installs
+    zstd = None
+
 if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 if hasattr(sys.stderr, "reconfigure"):
@@ -40,6 +45,8 @@ PAYER_PATTERNS = [
     re.compile(r"付款人[:：]\s*(?P<payer>[^\s，。；;]{1,24})"),
 ]
 TRANSFER_RECEIVED_SUBTYPES = {"3", "8"}
+DEFAULT_WECHAT_DECRYPT_DB_GLOB = "message_*.db,biz_message_*.db"
+_ZSTD_DCTX = zstd.ZstdDecompressor() if zstd is not None else None
 
 
 @dataclass(frozen=True)
@@ -113,6 +120,28 @@ def decode_blob(value: bytes) -> str:
         return ""
     candidates.sort(reverse=True)
     return candidates[0][2]
+
+
+def decode_wechat_content(value: object, compression_type: object = None) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, bytes):
+        try:
+            ct = int(compression_type or 0)
+        except (TypeError, ValueError):
+            ct = 0
+        if ct == 4 and _ZSTD_DCTX is not None:
+            try:
+                return normalize_text(_ZSTD_DCTX.decompress(value).decode("utf-8", errors="replace"))
+            except Exception:
+                pass
+        return decode_blob(value)
+    return normalize_text(str(value))
+
+
+def split_globs(raw: str) -> list[str]:
+    patterns = [part.strip() for part in str(raw or "").split(",") if part.strip()]
+    return patterns or DEFAULT_WECHAT_DECRYPT_DB_GLOB.split(",")
 
 
 def normalize_amount(raw: str) -> str | None:
@@ -355,7 +384,18 @@ class WeChatDecryptDbSource:
                 f"wechat-decrypt message dir not found: {self.message_dir}. "
                 "Run wechat-decrypt first or set WECHAT_DECRYPT_MESSAGE_DIR."
             )
-        return sorted(path for path in self.message_dir.glob(self.db_glob) if path.is_file())
+        files: list[Path] = []
+        seen: set[str] = set()
+        for pattern in split_globs(self.db_glob):
+            for path in self.message_dir.glob(pattern):
+                if not path.is_file():
+                    continue
+                key = str(path.resolve()).lower()
+                if key in seen:
+                    continue
+                seen.add(key)
+                files.append(path)
+        return sorted(files)
 
     def poll(self) -> Iterable[TextEvent]:
         for db_file in self._db_files():
@@ -382,22 +422,35 @@ class WeChatDecryptDbSource:
         lower = {col.lower(): col for col in columns}
         wanted_names = [
             "localid",
+            "local_id",
             "msgsvrid",
+            "server_id",
             "type",
+            "local_type",
             "subtype",
             "issender",
             "createtime",
+            "create_time",
             "strtalker",
+            "real_sender_id",
+            "source",
+            "origin_source",
             "strcontent",
+            "message_content",
             "displaycontent",
+            "display_content",
             "compresscontent",
+            "compress_content",
             "bytesextra",
+            "packed_info_data",
+            "wcdb_ct_message_content",
+            "wcdb_ct_source",
         ]
         selected_cols = [lower[name] for name in wanted_names if name in lower]
         if not selected_cols:
             selected_cols = columns
         selected = ", ".join(quote_ident(col) for col in selected_cols)
-        order_col = lower.get("localid") or lower.get("createtime") or "rowid"
+        order_col = lower.get("localid") or lower.get("local_id") or lower.get("createtime") or lower.get("create_time") or "rowid"
         sql = f"SELECT rowid AS __rowid__, {selected} FROM {quote_ident(table)} ORDER BY {quote_ident(order_col) if order_col != 'rowid' else 'rowid'} DESC LIMIT ?"
         try:
             rows = conn.execute(sql, (self.max_rows_per_table,)).fetchall()
@@ -405,20 +458,35 @@ class WeChatDecryptDbSource:
             return
 
         for row in rows:
+            compression_by_content = {
+                "message_content": row[lower["wcdb_ct_message_content"]]
+                for _ in [None]
+                if "message_content" in lower and "wcdb_ct_message_content" in lower
+            }
+            compression_by_content.update(
+                {
+                    "source": row[lower["wcdb_ct_source"]]
+                    for _ in [None]
+                    if "source" in lower and "wcdb_ct_source" in lower
+                }
+            )
             parts = []
             for col in selected_cols:
                 value = row[col]
                 if value is None:
                     continue
-                text = decode_blob(value) if isinstance(value, bytes) else str(value)
+                text = decode_wechat_content(value, compression_by_content.get(col.lower()))
                 if text:
                     parts.append(text[:4000])
             text = normalize_text(" ".join(parts))
             if not text:
                 continue
-            local_id = row[lower["localid"]] if "localid" in lower else row["__rowid__"]
-            msg_svr_id = row[lower["msgsvrid"]] if "msgsvrid" in lower else ""
-            create_time = row[lower["createtime"]] if "createtime" in lower else None
+            local_col = lower.get("localid") or lower.get("local_id")
+            msg_svr_col = lower.get("msgsvrid") or lower.get("server_id")
+            create_col = lower.get("createtime") or lower.get("create_time")
+            local_id = row[local_col] if local_col else row["__rowid__"]
+            msg_svr_id = row[msg_svr_col] if msg_svr_col else ""
+            create_time = row[create_col] if create_col else None
             yield TextEvent(
                 source="wechat-decrypt-db",
                 source_id=f"{db_name}:{table}:{local_id}:{msg_svr_id}",
@@ -709,7 +777,7 @@ def build_args() -> argparse.Namespace:
     parser.add_argument("--source", choices=["notification-db", "wechat-window-ocr", "wechat-decrypt-db", "file-tail", "stdin"], default=env("WECHAT_WATCHER_SOURCE", "notification-db"))
     parser.add_argument("--notification-db", default=env("WECHAT_NOTIFICATION_DB", str(default_notification_db())))
     parser.add_argument("--wechat-decrypt-message-dir", default=env("WECHAT_DECRYPT_MESSAGE_DIR"))
-    parser.add_argument("--wechat-decrypt-db-glob", default=env("WECHAT_DECRYPT_DB_GLOB", "message_*.db"))
+    parser.add_argument("--wechat-decrypt-db-glob", default=env("WECHAT_DECRYPT_DB_GLOB", DEFAULT_WECHAT_DECRYPT_DB_GLOB))
     parser.add_argument("--ocr-script", default=env("WECHAT_WINDOW_OCR_SCRIPT", str(Path(__file__).with_name("wechat_window_ocr.ps1"))))
     parser.add_argument("--ocr-timeout", type=int, default=int(env("WECHAT_WINDOW_OCR_TIMEOUT_SECONDS", "20")))
     parser.add_argument("--ocr-screenshot", default=env("WECHAT_WINDOW_OCR_SCREENSHOT"))

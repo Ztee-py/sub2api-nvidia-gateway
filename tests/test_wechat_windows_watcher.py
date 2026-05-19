@@ -10,9 +10,12 @@ sys.path.insert(0, str(ROOT / "cloud-deploy" / "qrpay-bridge" / "watchers"))
 
 from wechat_windows_watcher import (  # noqa: E402
     TextEvent,
+    DEFAULT_WECHAT_DECRYPT_DB_GLOB,
     WeChatDecryptDbSource,
+    decode_wechat_content,
     parse_receipt,
     parse_wechat_receipt,
+    split_globs,
 )
 
 
@@ -105,6 +108,63 @@ class WeChatWindowsWatcherTest(unittest.TestCase):
         self.assertIsNotNone(receipt)
         self.assertEqual(receipt.amount, "12.34")
         self.assertEqual(receipt.payer, "李四")
+
+    def test_wechat_decrypt_db_source_reads_new_4x_biz_message_tables(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = Path(tmp) / "biz_message_0.db"
+            conn = sqlite3.connect(db_path)
+            conn.execute(
+                """
+                CREATE TABLE Msg_pay(
+                    local_id INTEGER PRIMARY KEY,
+                    server_id TEXT,
+                    local_type INTEGER,
+                    create_time INTEGER,
+                    real_sender_id INTEGER,
+                    source BLOB,
+                    message_content BLOB,
+                    compress_content BLOB,
+                    packed_info_data BLOB,
+                    WCDB_CT_message_content INTEGER,
+                    WCDB_CT_source INTEGER
+                )
+                """
+            )
+            conn.execute(
+                """
+                INSERT INTO Msg_pay(
+                    local_id, server_id, local_type, create_time, real_sender_id, source,
+                    message_content, compress_content, packed_info_data,
+                    WCDB_CT_message_content, WCDB_CT_source
+                )
+                VALUES (2, 'svr-2', 49, 1770000000, 3, '', ?, '', '', 0, 0)
+                """,
+                ("微信支付 二维码收款到账 ¥0.01 来自测试用户的付款".encode("utf-8"),),
+            )
+            conn.commit()
+            conn.close()
+
+            source = WeChatDecryptDbSource(Path(tmp), "message_*.db,biz_message_*.db", 20)
+            events = list(source.poll())
+
+        self.assertEqual(len(events), 1)
+        self.assertEqual(events[0].source_id, "biz_message_0.db:Msg_pay:2:svr-2")
+        receipt = parse_receipt(events[0])
+        self.assertIsNotNone(receipt)
+        self.assertEqual(receipt.amount, "0.01")
+
+    def test_split_globs_defaults_to_message_and_biz_message(self):
+        self.assertEqual(split_globs("message_*.db,biz_message_*.db"), ["message_*.db", "biz_message_*.db"])
+        self.assertEqual(split_globs(""), DEFAULT_WECHAT_DECRYPT_DB_GLOB.split(","))
+
+    def test_decode_wechat_4x_zstd_message_content_when_available(self):
+        try:
+            import zstandard as zstd
+        except Exception:
+            self.skipTest("zstandard is not installed")
+        raw = "微信支付 收款到账0.01元".encode("utf-8")
+        compressed = zstd.ZstdCompressor().compress(raw)
+        self.assertEqual(decode_wechat_content(compressed, 4), "微信支付收款到账0.01元")
 
 
 if __name__ == "__main__":

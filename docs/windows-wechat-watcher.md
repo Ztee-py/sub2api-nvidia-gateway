@@ -40,7 +40,7 @@ QRPAY_BRIDGE_URL=https://Zteapi.com/qrpay
 QRPAY_WATCHER_SECRET=your-real-secret
 WECHAT_WATCHER_SOURCE=wechat-decrypt-db
 WECHAT_DECRYPT_MESSAGE_DIR=C:\path\to\wechat-decrypt\decrypted\message
-WECHAT_DECRYPT_DB_GLOB=message_*.db
+WECHAT_DECRYPT_DB_GLOB=message_*.db,biz_message_*.db
 WECHAT_WATCHER_STATE_RETENTION_DAYS=30
 ```
 
@@ -80,7 +80,7 @@ Important behavior:
 - It does not confirm orders in `-DryRun`.
 - Keep this window open, create a tiny WeChat test order, pay it, and watch for `DRY-RUN match amount=...`.
 
-If the dry run sees nothing with `wechat-decrypt-db`, confirm that `WECHAT_DECRYPT_MESSAGE_DIR` points at the active decrypted message directory and that the latest WeChat receipt message appears in those `message_*.db` files.
+If the dry run sees nothing with `wechat-decrypt-db`, confirm that `WECHAT_DECRYPT_MESSAGE_DIR` points at the active decrypted message directory and that the latest WeChat receipt message appears in those `message_*.db` or `biz_message_*.db` files.
 
 ## Real Run
 
@@ -108,7 +108,19 @@ By default it does not send the raw notification text. Add `-SendRawText` only w
 
 ## Optional Startup Task
 
-After it works manually, create a logon task:
+After it works manually, create a logon task for the full stack. This starts both the wechat-decrypt refresher and the watcher:
+
+```powershell
+.\run_wechat_qrpay_stack.ps1 -InstallStartupTask
+```
+
+To remove the full-stack logon task:
+
+```powershell
+.\run_wechat_qrpay_stack.ps1 -UninstallStartupTask
+```
+
+The older single-process watcher task is still available when you only need the watcher process:
 
 ```powershell
 .\run_wechat_windows_watcher.ps1 -InstallStartupTask

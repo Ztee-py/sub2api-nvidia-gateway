@@ -1,7 +1,8 @@
 import importlib.util
-import os
 import pathlib
+import sys
 import unittest
+from datetime import timedelta
 from decimal import Decimal
 from unittest.mock import patch
 
@@ -13,6 +14,9 @@ APP_PATH = ROOT / "cloud-deploy" / "qrpay-bridge" / "app.py"
 
 
 def load_qrpay_app():
+    app_dir = str(APP_PATH.parent)
+    if app_dir not in sys.path:
+        sys.path.insert(0, app_dir)
     spec = importlib.util.spec_from_file_location("qrpay_bridge_app_security", APP_PATH)
     module = importlib.util.module_from_spec(spec)
     assert spec.loader is not None
@@ -23,6 +27,50 @@ def load_qrpay_app():
 class DummyRequest:
     def __init__(self, host="Zteapi.com", proto="https"):
         self.headers = {"host": host, "x-forwarded-proto": proto}
+
+
+class DummyConn:
+    def __init__(self, app, order):
+        self.app = app
+        self.order = order
+        self.audits = []
+        self.receipts = []
+        self.updated_paid = False
+        self.updated_completed = False
+
+    def execute(self, sql, params=()):
+        normalized = " ".join(str(sql).split()).upper()
+        if "SELECT * FROM PAYMENT_ORDERS WHERE OUT_TRADE_NO=" in normalized:
+            return DummyResult(self.order)
+        if normalized.startswith("INSERT INTO QRPAY_BRIDGE_RECEIPTS"):
+            self.receipts.append(params)
+            return DummyResult({"id": 1})
+        if normalized.startswith("UPDATE PAYMENT_ORDERS SET STATUS='PAID'") or "SET STATUS='PAID'" in normalized:
+            self.updated_paid = True
+            self.order["status"] = "PAID"
+            self.order["payment_trade_no"] = params[0]
+            self.order["pay_amount"] = params[1]
+            return DummyResult(None)
+        if "SET STATUS='COMPLETED'" in normalized:
+            self.updated_completed = True
+            self.order["status"] = "COMPLETED"
+            return DummyResult(None)
+        if normalized.startswith("SELECT * FROM PAYMENT_ORDERS WHERE ID="):
+            return DummyResult(self.order)
+        if normalized.startswith("UPDATE USERS"):
+            return DummyResult(None)
+        if normalized.startswith("INSERT INTO PAYMENT_AUDIT_LOGS"):
+            self.audits.append(params)
+            return DummyResult(None)
+        raise AssertionError(f"unexpected SQL: {sql}")
+
+
+class DummyResult:
+    def __init__(self, value):
+        self.value = value
+
+    def fetchone(self):
+        return self.value
 
 
 class QrpaySecurityTests(unittest.TestCase):
@@ -113,6 +161,80 @@ class QrpaySecurityTests(unittest.TestCase):
         payload = self.app.bounded_json(value, max_bytes=128)
         self.assertTrue(payload["_truncated"])
         self.assertLessEqual(len(payload["preview"].encode("utf-8")), 128)
+
+    def test_parse_bool_accepts_common_true_values(self):
+        self.assertTrue(self.app.parse_bool(True))
+        self.assertTrue(self.app.parse_bool("yes"))
+        self.assertTrue(self.app.parse_bool("1"))
+        self.assertFalse(self.app.parse_bool(False))
+        self.assertFalse(self.app.parse_bool("no"))
+
+    def test_manual_confirm_can_allow_expired_order_with_operator_note(self):
+        order = {
+            "id": 21,
+            "out_trade_no": "zqr_20260519safe",
+            "amount": Decimal("0.01"),
+            "pay_amount": Decimal("0.01"),
+            "payment_type": "wechat_code",
+            "order_type": "balance",
+            "status": "EXPIRED",
+            "pay_url": "/qrpay/pay/zqr_20260519safe",
+            "expires_at": self.app.now_utc() - timedelta(minutes=30),
+            "paid_at": None,
+            "completed_at": None,
+            "plan_id": None,
+            "subscription_group_id": None,
+            "subscription_days": None,
+            "user_id": 7,
+        }
+        conn = DummyConn(self.app, order)
+
+        result = self.app.confirm_payment(
+            conn,
+            "zqr_20260519safe",
+            "manual",
+            "manual-zqr_20260519safe",
+            "0.01",
+            "",
+            {"operator_note": "WeChat receipt verified manually"},
+            allow_expired=True,
+        )
+
+        self.assertEqual(result["status"], "COMPLETED")
+        self.assertTrue(conn.updated_paid)
+        self.assertTrue(conn.updated_completed)
+        self.assertEqual(len(conn.receipts), 1)
+
+    def test_expired_order_without_allow_expired_still_rejected(self):
+        order = {
+            "id": 21,
+            "out_trade_no": "zqr_20260519safe",
+            "amount": Decimal("0.01"),
+            "pay_amount": Decimal("0.01"),
+            "payment_type": "wechat_code",
+            "order_type": "balance",
+            "status": "EXPIRED",
+            "pay_url": "/qrpay/pay/zqr_20260519safe",
+            "expires_at": self.app.now_utc() - timedelta(minutes=30),
+            "paid_at": None,
+            "completed_at": None,
+            "plan_id": None,
+            "subscription_group_id": None,
+            "subscription_days": None,
+            "user_id": 7,
+        }
+        conn = DummyConn(self.app, order)
+
+        with self.assertRaises(HTTPException):
+            self.app.confirm_payment(
+                conn,
+                "zqr_20260519safe",
+                "manual",
+                "manual-zqr_20260519safe",
+                "0.01",
+                "",
+                {"operator_note": "WeChat receipt verified manually"},
+            )
 
     def test_qrpay_caddy_routes_are_no_store(self):
         caddy = (ROOT / "cloud-deploy" / "Caddyfile").read_text(encoding="utf-8")
