@@ -54,7 +54,13 @@
 		}
 	}
 
-	@qrpay_pages path /purchase /payment /orders /subscriptions
+	@legacy_payment path /payment /payment/
+	handle @legacy_payment {
+		header Cache-Control "no-store"
+		redir /purchase 302
+	}
+
+	@qrpay_pages path /purchase /orders /subscriptions
 	handle @qrpay_pages {
 		header Cache-Control "no-store"
 		reverse_proxy html-injector:8090 {
