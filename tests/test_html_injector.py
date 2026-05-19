@@ -184,5 +184,30 @@ class StreamProxyTests(unittest.TestCase):
         self.assertIn(b"response.completed", body)
 
 
+class ContentSecurityPolicyTests(unittest.TestCase):
+    def test_adds_self_to_existing_frame_src(self):
+        patched = html_injector.ensure_csp_allows_self_frames(
+            "default-src 'self'; frame-src https://challenges.cloudflare.com; frame-ancestors 'none'"
+        )
+
+        self.assertIn("frame-src 'self' https://challenges.cloudflare.com", patched)
+        self.assertIn("frame-ancestors 'none'", patched)
+
+    def test_removes_none_when_self_frames_are_required(self):
+        patched = html_injector.ensure_csp_allows_self_frames(
+            "default-src 'self'; frame-src 'none'"
+        )
+
+        self.assertIn("frame-src 'self'", patched)
+        self.assertNotIn("frame-src 'none'", patched)
+
+    def test_adds_frame_src_when_missing(self):
+        patched = html_injector.ensure_csp_allows_self_frames(
+            "default-src 'self'; script-src 'self'"
+        )
+
+        self.assertIn("frame-src 'self'", patched)
+
+
 if __name__ == "__main__":
     unittest.main()

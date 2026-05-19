@@ -39,6 +39,7 @@ HOP_BY_HOP_HEADERS = {
 HEAD_LINK = '<link rel="stylesheet" href="/zteapi-floating-doc.css" data-zteapi-floating-doc>'
 BODY_SCRIPT = '<script defer src="/zteapi-floating-doc.js" data-zteapi-floating-doc></script>'
 IMAGE_TOOL_TYPES = {"image_generation", "image_generation_call"}
+CSP_SELF = "'self'"
 
 
 def inject_assets(body: bytes) -> bytes:
@@ -63,6 +64,32 @@ def inject_assets(body: bytes) -> bytes:
         html += BODY_SCRIPT
 
     return html.encode("utf-8")
+
+
+def ensure_csp_allows_self_frames(value: str) -> str:
+    directives = []
+    has_frame_src = False
+
+    for raw_directive in value.split(";"):
+        directive = raw_directive.strip()
+        if not directive:
+            continue
+
+        parts = directive.split()
+        name = parts[0].lower()
+        if name == "frame-src":
+            has_frame_src = True
+            sources = [source for source in parts[1:] if source != "'none'"]
+            if CSP_SELF not in sources:
+                sources.insert(0, CSP_SELF)
+            directive = " ".join([parts[0], *sources])
+
+        directives.append(directive)
+
+    if not has_frame_src:
+        directives.append(f"frame-src {CSP_SELF}")
+
+    return "; ".join(directives)
 
 
 def should_sanitize_responses_request(method: str, path: str, content_type: str) -> bool:
@@ -285,6 +312,8 @@ class ProxyHandler(BaseHTTPRequestHandler):
             lower = key.lower()
             if lower in HOP_BY_HOP_HEADERS or lower in {"content-length", "content-encoding"}:
                 continue
+            if lower == "content-security-policy":
+                value = ensure_csp_allows_self_frames(value)
             self.send_header(key, value)
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
@@ -297,6 +326,8 @@ class ProxyHandler(BaseHTTPRequestHandler):
             lower = key.lower()
             if lower in HOP_BY_HOP_HEADERS or lower in {"content-length", "content-encoding"}:
                 continue
+            if lower == "content-security-policy":
+                value = ensure_csp_allows_self_frames(value)
             self.send_header(key, value)
         self.send_header("Cache-Control", "no-cache")
         self.end_headers()
