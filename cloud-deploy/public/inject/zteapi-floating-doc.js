@@ -153,6 +153,7 @@
     if (label && compactText(label) !== MAIN_PAYMENT_LABEL) {
       label.textContent = MAIN_PAYMENT_LABEL;
     }
+    link.dataset.zteapiPurchaseLink = "1";
   }
 
   function paymentLinkRole(path, text) {
@@ -246,6 +247,28 @@
     return main;
   }
 
+  function setDashboardPurchaseChrome(active) {
+    if (!document.documentElement) return;
+    if (!active) {
+      delete document.documentElement.dataset.zteapiActivePage;
+      return;
+    }
+
+    document.documentElement.dataset.zteapiActivePage = "purchase";
+    const banner = document.querySelector("header, [role='banner'], .topbar, .page-header, [class*='header']");
+    const heading = banner && banner.querySelector("h1");
+    if (heading && compactText(heading) !== MAIN_PAYMENT_LABEL) heading.textContent = MAIN_PAYMENT_LABEL;
+    const subtitle =
+      banner &&
+      (banner.querySelector("p") || banner.querySelector(".text-muted, [class*='subtitle'], [class*='description']"));
+    if (subtitle) subtitle.textContent = "通过微信收款码完成充值与订阅。";
+
+    collectSidebarPaymentLinks().forEach(({ link }) => {
+      link.dataset.zteapiPurchaseLink = "1";
+      link.setAttribute("aria-current", "page");
+    });
+  }
+
   function updateQrpayHistory(role, push) {
     const target = qrpayTargetForRole(role);
     if (window.location.pathname === target) return;
@@ -262,6 +285,7 @@
     if (!main) return false;
 
     const normalizedRole = role || qrpayRoleForPath(window.location.pathname || "/");
+    setDashboardPurchaseChrome(true);
     const framePath = qrpayFramePathForRole(normalizedRole);
     const existing = qrpaySubpageContainer();
     const existingFrame = existing && existing.querySelector("iframe");
@@ -470,7 +494,10 @@
   }
 
   function refresh() {
-    forceQrpayPageIfNeeded();
+    const onPaymentRoute = forceQrpayPageIfNeeded();
+    if (!onPaymentRoute && !QRPAY_PAGE_PATHS.includes(window.location.pathname || "/")) {
+      setDashboardPurchaseChrome(false);
+    }
     const dock = ensureDock();
     if (!dock) return;
     const docs = dock.querySelector(".zteapi-floating-doc");
