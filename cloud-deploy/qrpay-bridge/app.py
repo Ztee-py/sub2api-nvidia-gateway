@@ -110,7 +110,7 @@ class Settings:
 settings = Settings()
 app = FastAPI(title="ZteAPI QR Pay Bridge")
 
-QR_PAYMENT_METHODS = {"alipay_code", "wechat_code"}
+QR_PAYMENT_METHODS = {"wechat_code"}
 SAFE_HOST_RE = re.compile(r"^[A-Za-z0-9.-]+(?::[0-9]{1,5})?$")
 SAFE_RELATIVE_URL_RE = re.compile(r"^/[A-Za-z0-9._~!$&'()*+,;=:@%/?#-]*$")
 JSON_TRUNCATED = "[truncated]"
@@ -614,22 +614,12 @@ async def current_admin(request: Request, secret: str | None = None) -> dict[str
 
 def enabled_methods() -> list[dict[str, Any]]:
     methods: list[dict[str, Any]] = []
-    if settings.enable_alipay_code and settings.alipay_user_id:
-        methods.append(
-            {
-                "id": "alipay_code",
-                "label": "支付宝收款码",
-                "description": "Epay alipaycode: 订单号备注 + 支付宝账单轮询识别",
-                "provider": "alipay",
-                "requires_watcher": True,
-            }
-        )
     if settings.enable_wechat_code and (settings.wechat_qr_image_url or settings.wechat_pay_url):
         methods.append(
             {
                 "id": "wechat_code",
-                "label": "微信收款码",
-                "description": "Epay onecode/vmq style: 固定收款码 + 金额扰动 + watcher/中间层确认",
+                "label": "微信支付",
+                "description": "固定微信收款码 + 唯一实付金额 + Windows watcher 自动确认到账",
                 "provider": "wechat",
                 "requires_watcher": True,
             }
@@ -867,7 +857,7 @@ def create_payment_order(conn, req: dict[str, Any], user: dict[str, Any], reques
         "schema_version": 1,
         "provider_key": settings.provider_key,
         "provider_instance_id": settings.provider_instance_id,
-        "epay_logic": "alipaycode" if method == "alipay_code" else "onecode_or_vmq",
+        "epay_logic": "onecode_or_vmq",
         "requires_watcher": True,
     }
     row = conn.execute(
@@ -1097,6 +1087,7 @@ async def get_config(request: Request) -> JSONResponse:
         expire_pending_orders(conn)
         plans = load_plans(conn)
         watcher_status = wechat_watcher_summary(conn)
+        user = await current_user(request)
         conn.commit()
     quick_amounts = [
         decimal_to_float(money_to_decimal(item))
@@ -1113,6 +1104,7 @@ async def get_config(request: Request) -> JSONResponse:
             "order_timeout_minutes": settings.order_timeout_minutes,
             "base_url": public_base(request),
             "watcher_status": watcher_status,
+            "user_balance": user.get("balance", 0),
         }
     )
 
@@ -1152,7 +1144,7 @@ async def admin_orders(request: Request, x_qrpay_secret: str | None = Header(def
     keyword = str(params.get("keyword") or "").strip()[:80]
     if status and status not in {"PENDING", "PAID", "COMPLETED", "EXPIRED", "FAILED", "CANCELLED"}:
         raise HTTPException(400, "unsupported status")
-    if payment_type and payment_type not in {"alipay_code", "wechat_code"}:
+    if payment_type and payment_type not in QR_PAYMENT_METHODS:
         raise HTTPException(400, "unsupported payment_type")
     with db_conn() as conn:
         expire_pending_orders(conn)
@@ -1189,6 +1181,36 @@ def get_public_order(out_trade_no: str) -> JSONResponse:
     return json_response(public_order_payload(row))
 
 
+@app.post("/api/orders/{out_trade_no}/cancel")
+async def cancel_order(out_trade_no: str, request: Request) -> JSONResponse:
+    user = await current_user(request)
+    safe_order_no(out_trade_no)
+    with db_conn() as conn:
+        expire_pending_orders(conn)
+        row = conn.execute(
+            "SELECT * FROM payment_orders WHERE out_trade_no=%s AND user_id=%s FOR UPDATE",
+            (out_trade_no, user["id"]),
+        ).fetchone()
+        if not row:
+            raise HTTPException(404, "order not found")
+        if row["status"] == "COMPLETED":
+            raise HTTPException(409, "completed orders cannot be cancelled")
+        if row["status"] not in {"PENDING", "FAILED", "EXPIRED"}:
+            raise HTTPException(409, f"order cannot be cancelled in status {row['status']}")
+        row = conn.execute(
+            """
+            UPDATE payment_orders
+               SET status='CANCELLED', updated_at=NOW()
+             WHERE id=%s
+             RETURNING *
+            """,
+            (row["id"],),
+        ).fetchone()
+        audit(conn, row["id"], "ORDER_CANCELLED", {"by": "user"}, operator=str(user.get("email") or user.get("id") or "user"))
+        conn.commit()
+    return json_response(public_order_payload(row))
+
+
 def qr_png(data: str) -> bytes:
     img = qrcode.make(data)
     buf = io.BytesIO()
@@ -1197,71 +1219,140 @@ def qr_png(data: str) -> bytes:
 
 
 @app.get("/api/orders/{out_trade_no}/qr.png")
-def order_qr(out_trade_no: str) -> Response:
+def order_qr(out_trade_no: str, request: Request) -> Response:
     safe_order_no(out_trade_no)
     with db_conn() as conn:
         row = conn.execute("SELECT * FROM payment_orders WHERE out_trade_no=%s", (out_trade_no,)).fetchone()
     if not row:
         raise HTTPException(404, "order not found")
+    download = request.query_params.get("download") == "1"
+    download_headers = {"Content-Disposition": f'attachment; filename="zteapi-wechat-pay-{out_trade_no}.png"'} if download else None
     if row["payment_type"] == "wechat_code":
         wechat_img = safe_public_url(settings.wechat_qr_image_url)
         if wechat_img:
+            if download and wechat_img.startswith("https://"):
+                try:
+                    req = urllib.request.Request(wechat_img, headers={"User-Agent": "ZteAPI-QRPay/1.0"})
+                    with urllib.request.urlopen(req, timeout=10) as resp:
+                        content_type = resp.headers.get_content_type()
+                        data = resp.read(2_000_001)
+                    if len(data) <= 2_000_000:
+                        media_type = content_type if content_type.startswith("image/") else "image/png"
+                        return Response(data, media_type=media_type, headers=download_headers)
+                except Exception as err:
+                    print(f"wechat qr download proxy failed: {err}", flush=True)
             return RedirectResponse(wechat_img, status_code=302)
     data = row["pay_url"] or row["qr_code"]
     if row["payment_type"] == "wechat_code" and settings.wechat_pay_url:
         data = settings.wechat_pay_url
-    return Response(qr_png(data), media_type="image/png")
+    return Response(qr_png(data), media_type="image/png", headers=download_headers)
 
 
 def render_pay_page(row: dict[str, Any]) -> str:
-    order_json = json.dumps(public_order_payload(row), ensure_ascii=False)
-    is_alipay = row["payment_type"] == "alipay_code"
-    method_label = "支付宝收款码" if is_alipay else "微信收款码"
+    payload = public_order_payload(row)
+    order_json = json.dumps(payload, ensure_ascii=False)
+    method_label = "微信支付"
     pay_amount = f"{money_to_decimal(row['pay_amount']):.2f}"
-    remark = f"请勿添加备注-{row['out_trade_no']}"
-    out_trade_no_html = escape_html(row["out_trade_no"])
-    method_label_html = escape_html(method_label)
+    original_amount = f"{money_to_decimal(row['amount']):.2f}"
+    out_trade_no = str(row["out_trade_no"])
+    out_trade_no_html = escape_html(out_trade_no)
     pay_amount_html = escape_html(pay_amount)
-    remark_html = escape_html(remark if is_alipay else "以金额扰动或 watcher 回传为准")
+    original_amount_html = escape_html(original_amount)
+    method_label_html = escape_html(method_label)
+    order_type_label = "订阅" if row.get("order_type") == "subscription" else "充值"
+    order_type_label_html = escape_html(order_type_label)
     wechat_img = safe_public_url(settings.wechat_qr_image_url) if row["payment_type"] == "wechat_code" else ""
-    qr_src = escape_html(wechat_img) if wechat_img else f"/qrpay/api/orders/{out_trade_no_html}/qr.png"
-    alipay_uid = settings.alipay_user_id
+    qr_src = wechat_img if wechat_img else f"/qrpay/api/orders/{out_trade_no}/qr.png"
+    qr_src_html = escape_html(qr_src)
+    save_qr_src_html = escape_html(f"/qrpay/api/orders/{out_trade_no}/qr.png?download=1")
+    download_name = f"zteapi-wechat-pay-{out_trade_no}.png"
     return f"""<!doctype html>
 <html lang="zh-CN">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>{method_label_html}</title>
+  <title>{method_label_html} - {out_trade_no_html}</title>
   <style>
-    body {{ margin:0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; background:#f5f7fb; color:#111827; }}
-    .wrap {{ min-height:100vh; display:grid; place-items:center; padding:24px; }}
-    .panel {{ width:min(420px, 100%); background:#fff; border:1px solid #e5e7eb; border-radius:8px; padding:24px; box-shadow:0 16px 50px rgba(15,23,42,.08); }}
-    h1 {{ margin:0 0 16px; font-size:22px; }}
-    .amount {{ font-size:36px; font-weight:800; margin:12px 0; }}
-    .qr {{ width:248px; height:248px; display:block; object-fit:contain; margin:18px auto; border:1px solid #e5e7eb; border-radius:6px; }}
-    .meta {{ color:#4b5563; font-size:14px; line-height:1.8; word-break:break-all; }}
-    .btn {{ display:block; width:100%; border:0; border-radius:6px; padding:13px 16px; background:#111827; color:white; font-weight:700; text-align:center; text-decoration:none; cursor:pointer; margin-top:14px; }}
-    .btn.secondary {{ background:#374151; }}
-    .tip {{ margin-top:14px; color:#6b7280; font-size:13px; line-height:1.7; }}
-    .ok {{ color:#059669; font-weight:700; }}
+    :root {{ color-scheme: light; --text:#111827; --muted:#6b7280; --line:#e5e7eb; --soft:#f8fafc; --wechat:#22c55e; --wechat-dark:#16a34a; --danger:#dc2626; --blue:#2563eb; }}
+    * {{ box-sizing:border-box; }}
+    body {{ margin:0; font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","Microsoft YaHei",Arial,sans-serif; background:#f6f7f9; color:var(--text); }}
+    .wrap {{ min-height:100vh; padding:26px clamp(14px,4vw,66px) 56px; }}
+    .brand {{ height:88px; display:flex; align-items:center; justify-content:center; gap:12px; margin-bottom:24px; background:#fff; border-radius:8px; }}
+    .pay-icon {{ display:inline-grid; place-items:center; width:34px; height:34px; border-radius:8px; color:#fff; background:var(--wechat); font-weight:900; }}
+    .brand strong {{ font-size:22px; }}
+    .card {{ min-height:660px; display:grid; place-items:center; background:#fff; border-radius:10px; padding:42px 18px 54px; box-shadow:0 1px 2px rgba(15,23,42,.04); }}
+    .inner {{ width:min(520px,100%); text-align:center; }}
+    .order-pill {{ display:inline-flex; align-items:center; gap:24px; max-width:100%; padding:14px 20px; border-radius:6px; background:#fafafa; color:#8b95a1; font-size:18px; }}
+    .order-pill b {{ color:#8b95a1; font-weight:600; word-break:break-all; }}
+    .goods {{ margin:28px 0 24px; color:#8b95a1; font-size:14px; }}
+    .divider {{ height:1px; background:#edf0f3; margin:0 0 20px; }}
+    .amount {{ color:#3d6df6; font-size:36px; font-weight:900; letter-spacing:0; margin:6px 0 10px; }}
+    .amount span {{ font-size:20px; margin-left:4px; }}
+    .qr-wrap {{ width:188px; margin:0 auto; padding:12px 12px 10px; background:var(--wechat); color:#fff; }}
+    .qr-title {{ font-size:15px; font-weight:800; margin:0 0 10px; }}
+    .qr {{ width:132px; height:132px; display:block; object-fit:contain; margin:0 auto; background:#fff; border-radius:4px; }}
+    .qr-footer {{ display:flex; align-items:center; justify-content:center; gap:6px; color:#4b5563; font-size:18px; margin-top:14px; }}
+    .qr-footer .mini {{ display:inline-grid; place-items:center; width:22px; height:22px; border-radius:50%; color:#fff; background:var(--wechat); font-size:13px; font-weight:900; }}
+    .must-pay {{ margin:30px 0 0; color:red; font-size:24px; font-weight:900; line-height:1.45; }}
+    .must-pay small {{ display:block; margin-top:12px; font-size:18px; }}
+    .countdown {{ margin-top:12px; color:red; font-size:20px; font-weight:900; }}
+    .hint {{ margin-top:46px; color:#9ca3af; font-size:18px; }}
+    .mobile-actions {{ display:none; grid-template-columns:1fr 1fr; gap:10px; margin-top:22px; }}
+    .mobile-tip {{ display:none; margin-top:14px; padding:12px 14px; border:1px solid #bbf7d0; border-radius:8px; background:#f0fdf4; color:#166534; line-height:1.7; font-size:14px; text-align:left; }}
+    .btn {{ display:inline-flex; align-items:center; justify-content:center; min-height:46px; padding:0 16px; border:1px solid transparent; border-radius:8px; font:inherit; font-weight:800; text-decoration:none; cursor:pointer; }}
+    .btn.primary {{ background:var(--wechat); color:#fff; }}
+    .btn.secondary {{ background:#fff; color:#334155; border-color:#d8dee6; }}
+    .status {{ margin-top:16px; color:#6b7280; font-size:14px; min-height:22px; }}
+    .status.ok {{ color:#059669; font-weight:800; }}
+    .status.bad {{ color:#dc2626; font-weight:800; }}
+    @media (max-width: 720px) {{
+      .wrap {{ padding:14px 12px 36px; }}
+      .brand {{ height:auto; padding:16px 12px; margin-bottom:12px; }}
+      .card {{ min-height:0; padding:26px 14px 34px; }}
+      .order-pill {{ font-size:14px; gap:10px; align-items:flex-start; text-align:left; }}
+      .amount {{ font-size:32px; }}
+      .mobile-actions, .mobile-tip {{ display:grid; }}
+      .must-pay {{ font-size:20px; }}
+      .countdown {{ font-size:18px; }}
+      .hint {{ margin-top:28px; font-size:15px; }}
+    }}
+    @media (max-width: 380px) {{ .mobile-actions {{ grid-template-columns:1fr; }} }}
   </style>
 </head>
 <body>
   <div class="wrap">
-    <main class="panel">
-      <h1>{method_label_html}</h1>
-      <div class="meta">订单号：{out_trade_no_html}</div>
-      <div class="amount">¥{pay_amount_html}</div>
-      <img class="qr" src="{qr_src}" alt="payment qrcode">
-      <div class="meta">收款识别备注：{remark_html}</div>
-      {"<button class='btn' id='openAlipay'>在支付宝内拉起转账</button>" if is_alipay else ""}
-      <a class="btn secondary" href="/dashboard">返回控制台</a>
-      <div class="tip" id="status">等待支付确认...</div>
+    <header class="brand"><span class="pay-icon">¥</span><span class="pay-icon">✓</span><strong>{method_label_html}</strong></header>
+    <main class="card">
+      <div class="inner">
+        <div class="order-pill"><span>商户订单号：</span><b>{out_trade_no_html}</b></div>
+        <div class="goods">商品名称：Sub2API {original_amount_html} CNY · {order_type_label_html}</div>
+        <div class="divider"></div>
+        <div class="amount">{pay_amount_html}<span>元</span></div>
+        <div class="qr-wrap">
+          <div class="qr-title">推荐使用微信支付</div>
+          <img id="payQr" class="qr" src="{qr_src_html}" alt="微信收款二维码">
+        </div>
+        <div class="qr-footer"><span class="mini">✓</span><span>微信支付</span></div>
+        <div class="must-pay">请付款 {pay_amount_html} 元，注意不能多付或少付<small>付款后，请等待 5 秒查看</small></div>
+        <div class="countdown" id="countdownText">二维码有效时间：--</div>
+        <div class="mobile-actions" id="mobileActions">
+          <a class="btn secondary" id="saveQr" href="{save_qr_src_html}" download="{escape_html(download_name)}">保存收款码</a>
+          <a class="btn primary" href="weixin://">打开微信</a>
+        </div>
+        <div class="mobile-tip" id="mobileTip"></div>
+        <div class="hint">请使用微信扫码支付</div>
+        <div class="status" id="status">等待支付确认...</div>
+      </div>
     </main>
   </div>
   <script>
     const order = {order_json};
-    const remark = {json.dumps(remark, ensure_ascii=False)};
+    const payAmount = {json.dumps(pay_amount)};
+    const qrSrc = {json.dumps(qr_src)};
+    let done = false;
+    function isWechat() {{ return /MicroMessenger/i.test(navigator.userAgent); }}
+    function isMobile() {{ return /Android|iPhone|iPad|iPod|Mobile/i.test(navigator.userAgent); }}
+    function html(value) {{ return String(value ?? '').replace(/[&<>"']/g, ch => ({{'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}}[ch])); }}
     function rememberSuccess(item) {{
       try {{
         sessionStorage.setItem('zteapi_qrpay_success', JSON.stringify({{
@@ -1273,44 +1364,69 @@ def render_pay_page(row: dict[str, Any]) -> str:
       }} catch (_) {{}}
     }}
     function finish(item) {{
+      if (done) return;
+      done = true;
       rememberSuccess(item);
-      document.getElementById('status').innerHTML = '<span class="ok">支付已完成，5 秒后返回控制台...</span>';
-      setTimeout(() => {{ location.href = '/dashboard'; }}, 5000);
+      const status = document.getElementById('status');
+      status.className = 'status ok';
+      status.textContent = '支付已完成，正在返回控制台...';
+      setTimeout(() => {{ location.href = '/dashboard'; }}, 1500);
     }}
-    function poll() {{
-      fetch('/qrpay/api/public/orders/' + order.out_trade_no)
-        .then(r => r.json())
-        .then(res => {{
-          const item = res.data || {{}};
-          if (item.status === 'COMPLETED') {{
-            finish(item);
-          }} else if (item.status === 'EXPIRED') {{
-            document.getElementById('status').textContent = '订单已过期，请重新下单。';
-          }} else {{
-            setTimeout(poll, 2000);
-          }}
-        }})
-        .catch(() => setTimeout(poll, 3000));
+    function fail(message) {{
+      const status = document.getElementById('status');
+      status.className = 'status bad';
+      status.textContent = message;
     }}
-    poll();
-    function openAlipay() {{
-      if (!window.AlipayJSBridge) return;
-      AlipayJSBridge.call('startApp', {{
-        appId: '20000123',
-        param: {{
-          actionType: 'scan',
-          u: {json.dumps(alipay_uid)},
-          a: {json.dumps(pay_amount)},
-          m: remark,
-          biz_data: {{ s: 'money', u: {json.dumps(alipay_uid)}, a: {json.dumps(pay_amount)}, m: remark }}
+    function failAndReturn(message) {{
+      fail(message + '，即将返回充值/订阅页面...');
+      done = true;
+      const retryPath = order.order_type === 'subscription' ? '/subscriptions' : '/purchase';
+      setTimeout(() => {{ location.href = retryPath; }}, 2500);
+    }}
+    function renderCountdown(item) {{
+      const box = document.getElementById('countdownText');
+      if (!item.expires_at) {{ box.textContent = '请尽快完成付款'; return; }}
+      const seconds = Math.max(0, Math.floor((new Date(item.expires_at).getTime() - Date.now()) / 1000));
+      const minute = Math.floor(seconds / 60);
+      const second = seconds % 60;
+      if (seconds <= 0 || item.status === 'EXPIRED') {{
+        box.textContent = '二维码已过期，失效勿付';
+        fail('订单已过期，请回到充值/订阅页面重新下单。');
+        return;
+      }}
+      box.innerHTML = `二维码有效时间：<span>${{minute}}</span>分<span>${{String(second).padStart(2, '0')}}</span> 秒，失效勿付`;
+    }}
+    async function poll() {{
+      if (done) return;
+      try {{
+        const res = await fetch('/qrpay/api/public/orders/' + encodeURIComponent(order.out_trade_no), {{ cache: 'no-store' }});
+        const json = await res.json();
+        const item = json.data || {{}};
+        renderCountdown(item);
+        if (item.status === 'COMPLETED') return finish(item);
+        if (item.status === 'EXPIRED' || item.status === 'FAILED' || item.status === 'CANCELLED') {{
+          return failAndReturn(item.status === 'CANCELLED' ? '订单已取消' : '支付失败或订单已过期');
         }}
-      }});
+      }} catch (_) {{}}
+      setTimeout(poll, 2000);
     }}
-    document.getElementById('openAlipay')?.addEventListener('click', openAlipay);
-    if (/AlipayClient/i.test(navigator.userAgent)) {{
-      if (window.AlipayJSBridge) openAlipay();
-      document.addEventListener('AlipayJSBridgeReady', openAlipay, false);
+    function setupMobileHelp() {{
+      const tip = document.getElementById('mobileTip');
+      const actions = document.getElementById('mobileActions');
+      if (!isMobile()) return;
+      if (isWechat()) {{
+        actions.style.display = 'none';
+        tip.innerHTML = '<strong>微信内支付：</strong>长按上方二维码，选择“识别图中二维码”，付款时请手动输入 <b>' + html(payAmount) + '</b> 元。';
+      }} else {{
+        tip.innerHTML = '<strong>手机浏览器支付：</strong>先保存收款码，再打开微信，进入扫一扫 → 相册，选择刚保存的二维码。付款时请手动输入 <b>' + html(payAmount) + '</b> 元。';
+      }}
     }}
+    document.getElementById('saveQr').addEventListener('click', function () {{
+      setTimeout(() => {{ document.getElementById('status').textContent = '保存后请打开微信，从扫一扫相册选择该二维码。'; }}, 80);
+    }});
+    setupMobileHelp();
+    poll();
+    setInterval(() => renderCountdown(order), 1000);
   </script>
 </body>
 </html>"""
@@ -1531,239 +1647,197 @@ INDEX_HTML = """<!doctype html>
   <link rel="stylesheet" href="/zteapi-floating-doc.css" data-zteapi-floating-doc>
   <script defer src="/zteapi-floating-doc.js" data-zteapi-floating-doc></script>
   <style>
-    :root { color-scheme: light; --text:#111827; --muted:#6b7280; --line:#e5e7eb; --bg:#f7f8fb; --panel:#fff; --primary:#111827; --ok:#047857; --warn:#b45309; }
+    :root { color-scheme: light; --text:#111827; --muted:#6b7280; --line:#e3e7ee; --bg:#f7fafb; --panel:#fff; --wechat:#22c55e; --wechat-dark:#16a34a; --teal:#13b8a6; --teal-dark:#0f8f83; --danger:#ef4444; }
     * { box-sizing:border-box; }
-    body { margin:0; font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; background:var(--bg); color:var(--text); }
-    .shell { max-width:1180px; margin:0 auto; padding:28px 18px 48px; }
-    .top { display:flex; justify-content:space-between; align-items:flex-end; gap:16px; margin-bottom:18px; }
-    h1 { margin:0; font-size:28px; letter-spacing:0; }
-    .sub { color:var(--muted); margin-top:6px; }
-    .watch { display:grid; grid-template-columns:1.1fr 1fr 1fr; gap:12px; margin:16px 0 18px; border:1px solid var(--line); border-radius:8px; background:#fff; padding:14px; }
+    body { margin:0; font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","Microsoft YaHei",Arial,sans-serif; color:var(--text); background:linear-gradient(135deg,#e8fffb 0,#f9fbfd 42%,#fff 100%); }
+    .shell { min-height:100vh; padding:0 0 56px; }
+    .topbar { min-height:80px; display:flex; align-items:center; justify-content:space-between; gap:18px; padding:18px clamp(18px,4vw,32px); background:rgba(255,255,255,.9); border-bottom:1px solid #edf2f7; }
+    h1 { margin:0; font-size:28px; line-height:1.12; letter-spacing:0; }
+    .sub { margin-top:4px; color:#6b7280; font-size:14px; }
+    .top-actions { display:flex; align-items:center; gap:12px; flex-wrap:wrap; justify-content:flex-end; }
+    .balance-chip { display:inline-flex; align-items:center; gap:8px; min-height:40px; padding:0 16px; border-radius:999px; background:#ecfdf5; color:#047857; font-weight:900; }
+    .content { width:min(1120px, calc(100vw - 28px)); margin:42px auto 0; }
+    .tabs { display:grid; grid-template-columns:1fr 1fr; gap:0; margin-bottom:32px; background:#f1f5f9; border-radius:14px; padding:4px; }
+    .tab { min-height:52px; border:0; border-radius:10px; background:transparent; color:#667085; font:inherit; font-size:18px; cursor:pointer; }
+    .tab.active { background:#fff; color:#111827; box-shadow:0 1px 4px rgba(15,23,42,.12); }
+    .card { background:#fff; border:1px solid #edf0f4; border-radius:18px; padding:28px 30px; box-shadow:0 2px 5px rgba(15,23,42,.06); margin-bottom:30px; }
+    .card-title { margin:0 0 14px; font-size:18px; font-weight:500; color:#344054; }
+    .account-card { min-height:102px; display:flex; align-items:center; }
+    .account-card .label { color:#98a2b3; font-size:14px; margin-bottom:8px; }
+    .account-card .value { color:#16a34a; font-size:18px; }
+    .amounts { display:grid; grid-template-columns:repeat(3, minmax(0,1fr)); gap:10px; }
+    .amount { height:64px; border:1px solid #d8dee8; background:#fff; border-radius:8px; color:#334155; font:inherit; font-size:22px; cursor:pointer; transition:border-color .16s ease, background .16s ease, color .16s ease; }
+    .amount.active { border:2px solid #00c7b7; background:#effdfa; color:#007c75; }
+    .field-label { margin:20px 0 10px; color:#344054; font-size:17px; }
+    .custom-wrap { position:relative; }
+    .currency { position:absolute; left:16px; top:50%; transform:translateY(-50%); color:#98a2b3; font-size:20px; }
+    input, select { width:100%; min-height:58px; border:1px solid #d8dee8; border-radius:14px; padding:0 16px; font:inherit; font-size:18px; background:#fff; outline:none; }
+    #customAmount { padding-left:42px; }
+    input:focus { border-color:#14b8a6; box-shadow:0 0 0 3px rgba(20,184,166,.12); }
+    .methods { display:grid; grid-template-columns:1fr; gap:14px; }
+    .method { height:76px; display:flex; align-items:center; justify-content:center; gap:12px; border:1px solid #d8dee8; border-radius:8px; background:#fff; font:inherit; font-size:22px; font-weight:900; cursor:pointer; }
+    .method.active { border-color:#20c33a; background:#f0fff4; }
+    .wechat-mark { display:inline-grid; place-items:center; width:28px; height:28px; border-radius:50%; color:#fff; background:#12b824; font-size:16px; font-weight:900; }
+    .summary { display:flex; align-items:center; justify-content:space-between; min-height:86px; color:#64748b; font-size:18px; }
+    .summary strong { color:#111827; font-size:18px; font-weight:500; }
+    .pay-button { width:100%; min-height:60px; border:0; border-radius:10px; background:#28bd45; color:#fff; font:inherit; font-size:20px; font-weight:900; cursor:pointer; box-shadow:0 8px 16px rgba(34,197,94,.22); }
+    .pay-button:disabled { opacity:.5; cursor:not-allowed; }
+    .watch { display:grid; grid-template-columns:1.2fr 1fr 1fr; gap:12px; margin-bottom:28px; border:1px solid var(--line); border-radius:12px; background:#fff; padding:14px 16px; }
     .watch strong { display:block; font-size:14px; margin-bottom:4px; }
     .watch span { color:var(--muted); font-size:13px; }
     .watch.ok { border-color:#a7f3d0; background:#f0fdf4; }
     .watch.warn { border-color:#fde68a; background:#fffbeb; }
     .watch.bad { border-color:#fecaca; background:#fff7f7; }
-    .tabs { display:flex; gap:8px; flex-wrap:wrap; margin:18px 0; }
-    .tab { border:1px solid var(--line); background:#fff; border-radius:6px; padding:10px 14px; cursor:pointer; font-weight:700; }
-    .tab.active { background:var(--primary); color:#fff; border-color:var(--primary); }
-    .grid { display:grid; grid-template-columns: minmax(0, 1.2fr) minmax(300px, .8fr); gap:18px; align-items:start; }
-    .panel { background:var(--panel); border:1px solid var(--line); border-radius:8px; padding:18px; }
-    .panel h2 { margin:0 0 14px; font-size:18px; }
-    .amounts { display:grid; grid-template-columns: repeat(auto-fit, minmax(86px,1fr)); gap:10px; }
-    .amount { border:1px solid var(--line); background:#fff; border-radius:6px; padding:13px 8px; text-align:center; cursor:pointer; font-weight:800; }
-    .amount.active { border-color:var(--primary); box-shadow:0 0 0 2px rgba(17,24,39,.12); }
-    input, select { width:100%; border:1px solid var(--line); border-radius:6px; padding:12px 12px; font:inherit; background:#fff; }
-    .row { display:grid; grid-template-columns:1fr 1fr; gap:12px; margin-top:12px; }
-    .methods { display:flex; gap:10px; flex-wrap:wrap; }
-    .method { border:1px solid var(--line); background:#fff; border-radius:6px; padding:12px 14px; cursor:pointer; font-weight:800; }
-    .method.active { border-color:var(--primary); box-shadow:0 0 0 2px rgba(17,24,39,.12); }
-    .btn { border:0; background:var(--primary); color:#fff; border-radius:6px; padding:12px 16px; font-weight:800; cursor:pointer; }
-    .btn.secondary { background:#374151; color:#fff; text-decoration:none; display:inline-flex; align-items:center; justify-content:center; }
-    .btn:disabled { opacity:.45; cursor:not-allowed; }
-    .top-actions { display:flex; gap:10px; flex-wrap:wrap; justify-content:flex-end; }
-    .plans { display:grid; grid-template-columns:repeat(auto-fit,minmax(230px,1fr)); gap:12px; }
-    .plan { border:1px solid var(--line); border-radius:8px; padding:16px; background:#fff; }
-    .price { font-size:28px; font-weight:900; margin:8px 0; }
+    .notice { color:#6b7280; line-height:1.7; font-size:14px; }
+    .warning { margin-top:10px; color:#b45309; line-height:1.7; font-size:14px; }
+    .error { color:#b91c1c; font-weight:700; }
+    .plans { display:grid; grid-template-columns:repeat(auto-fit,minmax(230px,1fr)); gap:14px; }
+    .plan { border:1px solid var(--line); border-radius:12px; padding:18px; background:#fff; }
+    .plan strong { font-size:18px; }
+    .price { margin:10px 0; font-size:28px; font-weight:900; color:#0f766e; }
+    .plan .btn { width:100%; margin-top:14px; }
+    .btn { min-height:44px; border:0; border-radius:8px; background:#0f8f83; color:#fff; padding:0 16px; font:inherit; font-weight:800; cursor:pointer; text-decoration:none; display:inline-flex; align-items:center; justify-content:center; }
+    .btn.secondary { background:#fff; color:#334155; border:1px solid #d8dee8; }
     table { width:100%; border-collapse:collapse; font-size:14px; }
-    th, td { border-bottom:1px solid var(--line); padding:10px 8px; text-align:left; vertical-align:top; }
-    th { color:#374151; font-size:12px; text-transform:uppercase; }
+    th, td { border-bottom:1px solid var(--line); padding:11px 8px; text-align:left; vertical-align:top; }
+    th { color:#64748b; font-size:12px; }
     .pill { display:inline-flex; border-radius:999px; padding:3px 8px; background:#eef2ff; font-size:12px; font-weight:800; }
     .PENDING { background:#fef3c7; color:#92400e; }
     .COMPLETED { background:#d1fae5; color:#065f46; }
-    .EXPIRED, .FAILED { background:#fee2e2; color:#991b1b; }
-    .modal { position:fixed; inset:0; background:rgba(15,23,42,.48); display:none; place-items:center; padding:18px; }
+    .CANCELLED, .EXPIRED, .FAILED { background:#fee2e2; color:#991b1b; }
+    .waiting { width:min(1120px,100%); margin:0 auto; }
+    .wait-card { min-height:268px; display:grid; place-items:center; text-align:center; }
+    .spinner { width:52px; height:52px; border:5px solid #d1f7ef; border-top-color:#14b8a6; border-radius:50%; animation:spin 1s linear infinite; margin:0 auto 20px; }
+    @keyframes spin { to { transform:rotate(360deg); } }
+    .wait-title { color:#6b7280; font-size:16px; }
+    .wait-actions { display:flex; justify-content:center; gap:12px; flex-wrap:wrap; margin-top:18px; }
+    .timer-card { min-height:112px; text-align:center; }
+    .timer { font-size:34px; font-weight:900; }
+    .cancel-strip { width:100%; min-height:52px; border:1px solid #d8dee8; border-radius:12px; background:#fff; color:#374151; font:inherit; font-size:17px; cursor:pointer; }
+    .cancelled-card { min-height:350px; display:grid; place-items:center; text-align:center; }
+    .cancel-icon { display:grid; place-items:center; width:82px; height:82px; margin:0 auto 22px; border-radius:50%; background:#f2f4f7; color:#98a2b3; font-size:54px; line-height:1; }
+    .cancelled-card h2 { margin:0 0 20px; font-size:26px; }
+    .modal { position:fixed; inset:0; display:none; place-items:center; padding:20px; background:rgba(15,23,42,.45); z-index:1000; }
     .modal.open { display:grid; }
-    .dialog { width:min(440px,100%); background:#fff; border-radius:8px; padding:20px; }
-    .qr { display:block; width:240px; height:240px; object-fit:contain; margin:16px auto; border:1px solid var(--line); border-radius:6px; }
-    .notice { color:var(--muted); line-height:1.7; font-size:14px; }
-    .inline-warning { display:block; color:#92400e; line-height:1.6; font-size:13px; margin-top:8px; }
-    .error { color:#991b1b; font-weight:700; }
-    .success { color:var(--ok); font-weight:800; }
-    @media (max-width: 820px) { .grid, .row, .watch { grid-template-columns:1fr; } .top { align-items:flex-start; flex-direction:column; } }
+    .dialog { width:min(430px,100%); background:#fff; border-radius:12px; padding:24px; text-align:center; box-shadow:0 22px 60px rgba(15,23,42,.18); }
+    .dialog h3 { margin:0 0 10px; font-size:22px; }
+    .dialog p { margin:0 0 22px; color:#667085; line-height:1.7; }
+    .dialog-actions { display:grid; grid-template-columns:1fr 1fr; gap:10px; }
+    .view[hidden] { display:none !important; }
+    @media (max-width: 820px) { .watch { grid-template-columns:1fr; } .amounts { grid-template-columns:repeat(2,1fr); } .content { margin-top:20px; } .card { padding:22px 16px; } .summary { font-size:16px; } }
+    @media (max-width: 520px) { .topbar { align-items:flex-start; flex-direction:column; } .tabs { grid-template-columns:1fr; } .amounts { grid-template-columns:1fr; } .amount { height:56px; } .dialog-actions { grid-template-columns:1fr; } }
   </style>
 </head>
 <body>
   <main class="shell">
-    <div class="top">
-      <div><h1>充值/订阅</h1><div class="sub">余额充值、套餐订阅、订单状态在这里完成闭环。</div></div>
-      <div class="top-actions">
-        <a class="btn secondary" href="/dashboard">返回控制台</a>
-        <button class="btn" id="refreshBtn">刷新</button>
+    <header class="topbar">
+      <div><h1>充值/订阅</h1><div class="sub">通过内嵌页面完成充值/订阅</div></div>
+      <div class="top-actions"><span class="balance-chip">余额 $<span id="balanceText">--</span></span><a class="btn secondary" href="/dashboard">返回控制台</a></div>
+    </header>
+    <div class="content">
+      <div class="watch warn" id="watchStatus">
+        <div><strong>微信监听状态</strong><span>正在读取监听状态...</span></div><div><strong>最近心跳</strong><span>-</span></div><div><strong>最近确认订单</strong><span>-</span></div>
       </div>
+      <section id="purchaseView" class="view">
+        <div class="tabs"><button class="tab active" data-tab="recharge">充值</button><button class="tab" data-tab="plans">订阅</button></div>
+        <section id="rechargePanel">
+          <div class="card account-card"><div><div class="label">充值账户</div><div class="value">当前余额: <span id="balanceInline">--</span></div></div></div>
+          <div class="card"><h2 class="card-title">快捷金额</h2><div class="amounts" id="amounts"></div><div class="field-label">自定义金额</div><div class="custom-wrap"><span class="currency">$</span><input id="customAmount" inputmode="decimal" placeholder="请输入充值金额"></div></div>
+          <div class="card"><h2 class="card-title">支付方式</h2><div class="methods" id="methods"></div><p class="warning" id="methodNotice"></p></div>
+          <div class="card summary"><span>支付金额</span><strong>¥<span id="summaryAmount">0.00</span></strong></div>
+          <button class="pay-button" id="createRecharge">确认支付 ¥<span id="submitAmount">0.00</span></button>
+          <p class="warning" id="createWarning"></p>
+        </section>
+        <section id="plansPanel" hidden><div class="card"><h2 class="card-title">订阅套餐</h2><div class="plans" id="plansList"></div><p class="warning" id="planWarning"></p></div></section>
+      </section>
+      <section id="waitingView" class="view waiting" hidden>
+        <div class="card wait-card"><div><div class="spinner"></div><div class="wait-title">支付页面已在新窗口打开，请在新窗口中完成支付后返回此页面</div><div class="wait-actions"><button class="btn secondary" id="reopenPay">重新打开支付页面</button><button class="btn" id="refreshOrder">刷新订单状态</button></div></div></div>
+        <div class="card timer-card"><div class="timer" id="waitTimer">--:--</div><div class="notice">等待支付...</div></div>
+        <button class="cancel-strip" id="cancelOrder">取消订单</button>
+      </section>
+      <section id="cancelledView" class="view" hidden>
+        <div class="card cancelled-card"><div><div class="cancel-icon">×</div><h2>订单已取消</h2><p class="notice">您已取消本次支付</p><button class="btn" id="confirmCancelled">确认</button></div></div>
+      </section>
+      <section id="ordersView" class="view" hidden><div class="card"><h2 class="card-title">我的订单</h2><div id="ordersTable"></div></div></section>
+      <p class="error" id="errorBox"></p>
     </div>
-    <div class="watch warn" id="watchStatus">
-      <div><strong>微信监听状态</strong><span>正在读取监听状态...</span></div>
-      <div><strong>最近心跳</strong><span>-</span></div>
-      <div><strong>最近确认订单</strong><span>-</span></div>
-    </div>
-    <div class="tabs">
-      <button class="tab active" data-tab="recharge">余额充值</button>
-      <button class="tab" data-tab="plans">套餐订阅</button>
-      <button class="tab" data-tab="orders">我的订单</button>
-    </div>
-    <section id="recharge" class="view grid">
-      <div class="panel">
-        <h2>充值金额</h2>
-        <div class="amounts" id="amounts"></div>
-        <div class="row">
-          <input id="customAmount" inputmode="decimal" placeholder="自定义金额">
-          <div>
-            <button class="btn" id="createRecharge" style="width:100%">确认充值</button>
-            <span class="inline-warning" id="createWarning"></span>
-          </div>
-        </div>
-      </div>
-      <div class="panel">
-        <h2>支付方式</h2>
-        <div class="methods" id="methods"></div>
-        <p class="notice" id="methodNotice"></p>
-      </div>
-    </section>
-    <section id="plans" class="view" style="display:none">
-      <div class="panel">
-        <h2>订阅套餐</h2>
-        <div class="plans" id="plansList"></div>
-        <p class="inline-warning" id="planWarning"></p>
-      </div>
-    </section>
-    <section id="orders" class="view" style="display:none">
-      <div class="panel">
-        <h2>我的订单</h2>
-        <div id="ordersTable"></div>
-      </div>
-    </section>
-    <p class="notice error" id="errorBox"></p>
   </main>
-  <div class="modal" id="payModal">
-    <div class="dialog">
-      <h2>扫码支付</h2>
-      <div id="payInfo" class="notice"></div>
-      <img id="payQr" class="qr" alt="payment qrcode">
-      <button class="btn" id="closeModal" style="width:100%;margin-top:10px;background:#374151">关闭</button>
-    </div>
-  </div>
+  <div class="modal" id="cancelModal"><div class="dialog"><h3>取消订单？</h3><p>取消后本次二维码将失效。如果您已经付款，请不要取消，等待系统自动确认。</p><div class="dialog-actions"><button class="btn secondary" id="keepOrder">继续等待</button><button class="btn" id="confirmCancel">确认取消</button></div></div></div>
   <script>
-    const state = { config:null, watcherStatus:null, amount:null, method:null, orders:[], payPollTimer:null, redirectTimer:null };
+    const state = { config:null, watcherStatus:null, amount:null, method:null, orders:[], currentOrder:null, pollTimer:null, countdownTimer:null, redirectTimer:null, tab:'recharge' };
     function token() {
-      const cookies = Object.fromEntries(document.cookie.split(';').map(v => v.trim()).filter(Boolean).map(v => {
-        const i = v.indexOf('=');
-        return i === -1 ? [decodeURIComponent(v), ''] : [decodeURIComponent(v.slice(0, i)), decodeURIComponent(v.slice(i + 1))];
-      }));
+      const cookies = Object.fromEntries(document.cookie.split(';').map(v => v.trim()).filter(Boolean).map(v => { const i = v.indexOf('='); return i === -1 ? [decodeURIComponent(v), ''] : [decodeURIComponent(v.slice(0, i)), decodeURIComponent(v.slice(i + 1))]; }));
       const stores = [localStorage, sessionStorage];
       const preferred = ['token','access_token','auth_token','jwt','sub2api_token','accessToken','authToken'];
-      for (const k of preferred) if (cookies[k]) return cookies[k].replace(/^Bearer\\s+/i,'');
-      for (const s of stores) for (const k of preferred) { const v = s.getItem(k); if (v) return v.replace(/^Bearer\\s+/i,''); }
+      for (const k of preferred) if (cookies[k]) return cookies[k].replace(/^Bearer\s+/i,'');
+      for (const s of stores) for (const k of preferred) { const v = s.getItem(k); if (v) return v.replace(/^Bearer\s+/i,''); }
       for (const s of stores) for (let i=0;i<s.length;i++) { const v = s.getItem(s.key(i)); if (v && /^eyJ/.test(v)) return v; }
       return '';
     }
     async function api(path, options={}) {
       const headers = Object.assign({'Content-Type':'application/json'}, options.headers || {});
       const t = token(); if (t) headers.Authorization = 'Bearer ' + t;
-      const res = await fetch('/qrpay/api' + path, Object.assign({}, options, {headers}));
+      const res = await fetch('/qrpay/api' + path, Object.assign({}, options, {headers, cache:'no-store'}));
       const payload = await res.json().catch(() => ({}));
       if (!res.ok || payload.code) throw new Error(payload.message || payload.detail || res.statusText);
       return payload.data;
     }
-    function html(value) {
-      return String(value ?? '').replace(/[&<>"']/g, ch => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[ch]));
-    }
-    function safeClass(value) {
-      return String(value ?? '').replace(/[^A-Za-z0-9_-]/g, '');
-    }
-    function money(value) {
-      const n = Number(value);
-      return Number.isFinite(n) ? n.toFixed(2) : html(value);
-    }
+    function html(value) { return String(value ?? '').replace(/[&<>"']/g, ch => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[ch])); }
+    function safeClass(value) { return String(value ?? '').replace(/[^A-Za-z0-9_-]/g, ''); }
+    function money(value) { const n = Number(value); return Number.isFinite(n) ? n.toFixed(2) : String(value ?? '0.00'); }
     function showError(err) { document.getElementById('errorBox').textContent = err ? String(err.message || err) : ''; }
-    function fmtTime(value) {
-      if (!value) return '-';
-      const date = new Date(value);
-      if (Number.isNaN(date.getTime())) return String(value).replace('T',' ').slice(0,19);
-      return date.toLocaleString('zh-CN', {hour12:false});
-    }
-    function watcherWarning() {
-      if (state.method !== 'wechat_code') return '';
-      const status = state.watcherStatus || {};
-      return status.ok ? '' : (status.warning || '自动确认可能延迟，请联系管理员或等待人工补单。');
-    }
+    function fmtTime(value) { if (!value) return '-'; const date = new Date(value); return Number.isNaN(date.getTime()) ? String(value).replace('T',' ').slice(0,19) : date.toLocaleString('zh-CN', {hour12:false}); }
+    function selectedAmount() { const custom = document.getElementById('customAmount')?.value.trim(); return custom ? Number(custom) : Number(state.amount || 0); }
+    function setVisible(id) { ['purchaseView','waitingView','cancelledView','ordersView'].forEach(v => document.getElementById(v).hidden = v !== id); }
+    function watcherWarning() { if (state.method !== 'wechat_code') return ''; const status = state.watcherStatus || {}; return status.ok ? '请务必支付页面显示的准确金额，金额不一致将无法自动到账。' : (status.warning || '微信监听暂未确认在线，支付后可能延迟到账，请保留付款截图。'); }
     function renderWatchStatus() {
-      const box = document.getElementById('watchStatus');
-      const status = state.watcherStatus || {};
-      const cls = status.ok ? 'ok' : (status.last_heartbeat_at ? 'bad' : 'warn');
+      const box = document.getElementById('watchStatus'); const status = state.watcherStatus || {}; const cls = status.ok ? 'ok' : (status.last_heartbeat_at ? 'bad' : 'warn');
       box.className = 'watch ' + cls;
-      box.innerHTML = [
-        `<div><strong>${html(status.label || '微信监听未启用')}</strong><span>${html(status.monitor_name || '等待本地 watcher 心跳')}</span></div>`,
-        `<div><strong>最近心跳</strong><span>${fmtTime(status.last_heartbeat_at)}</span></div>`,
-        `<div><strong>最近确认订单</strong><span>${fmtTime(status.last_confirmed_order_at)}</span></div>`
-      ].join('');
+      box.innerHTML = [`<div><strong>${html(status.label || '微信监听未启用')}</strong><span>${html(status.monitor_name || '等待本地 watcher 心跳')}</span></div>`, `<div><strong>最近心跳</strong><span>${fmtTime(status.last_heartbeat_at)}</span></div>`, `<div><strong>最近确认订单</strong><span>${fmtTime(status.last_confirmed_order_at)}</span></div>`].join('');
     }
-    function rememberSuccess(item) {
-      try {
-        sessionStorage.setItem('zteapi_qrpay_success', JSON.stringify({
-          out_trade_no: item.out_trade_no,
-          amount: item.amount,
-          pay_amount: item.pay_amount,
-          order_type: item.order_type
-        }));
-      } catch (_) {}
-    }
-    function stopPayPolling() {
-      if (state.payPollTimer) clearTimeout(state.payPollTimer);
-      state.payPollTimer = null;
-    }
-    function finishPayment(item) {
-      stopPayPolling();
-      rememberSuccess(item);
-      const label = item.order_type === 'subscription' ? '订阅已开通' : '充值已到账';
-      document.getElementById('payInfo').innerHTML = `<span class="success">${html(label)}</span><br>订单号：${html(item.out_trade_no)}<br>5 秒后返回控制台。`;
-      refresh().catch(() => {});
-      if (state.redirectTimer) clearTimeout(state.redirectTimer);
-      state.redirectTimer = setTimeout(() => { location.href = '/dashboard'; }, 5000);
-    }
-    function paymentRetryPath(item) {
-      return item.order_type === 'subscription' ? '/subscriptions' : '/purchase';
-    }
-    function failPayment(item) {
-      stopPayPolling();
-      const reason = item.status === 'EXPIRED' ? '订单已过期' : '支付失败';
-      document.getElementById('payInfo').innerHTML = `<span class="error">${html(reason)}</span><br>订单号：${html(item.out_trade_no)}<br>应付金额：¥${money(item.pay_amount)}<br>5 秒后返回充值/订阅页面。`;
-      if (state.redirectTimer) clearTimeout(state.redirectTimer);
-      state.redirectTimer = setTimeout(() => { location.href = paymentRetryPath(item); }, 5000);
+    function rememberSuccess(item) { try { sessionStorage.setItem('zteapi_qrpay_success', JSON.stringify({ out_trade_no:item.out_trade_no, amount:item.amount, pay_amount:item.pay_amount, order_type:item.order_type })); } catch (_) {} }
+    function stopPolling() { if (state.pollTimer) clearTimeout(state.pollTimer); state.pollTimer = null; }
+    function stopCountdown() { if (state.countdownTimer) clearInterval(state.countdownTimer); state.countdownTimer = null; }
+    function finishPayment(item) { stopPolling(); stopCountdown(); rememberSuccess(item); if (state.redirectTimer) clearTimeout(state.redirectTimer); state.redirectTimer = setTimeout(() => { location.href = '/dashboard'; }, 1200); }
+    function paymentRetryPath(item) { return item && item.order_type === 'subscription' ? '/subscriptions' : '/purchase'; }
+    function showCancelled() { stopPolling(); stopCountdown(); document.getElementById('cancelModal').classList.remove('open'); setVisible('cancelledView'); history.replaceState(null, '', '/purchase'); refresh().catch(() => {}); }
+    function renderCountdown(item) {
+      const target = item || state.currentOrder; if (!target) return;
+      const box = document.getElementById('waitTimer');
+      const seconds = target.expires_at ? Math.max(0, Math.floor((new Date(target.expires_at).getTime() - Date.now()) / 1000)) : 0;
+      const minute = Math.floor(seconds / 60); const second = seconds % 60;
+      box.textContent = `${String(minute).padStart(2,'0')}:${String(second).padStart(2,'0')}`;
     }
     async function pollPayment(outTradeNo) {
       try {
-        const item = await api('/orders/' + outTradeNo);
-        if (item.status === 'COMPLETED') {
-          finishPayment(item);
-          return;
-        }
-        if (item.status === 'EXPIRED' || item.status === 'FAILED') {
-          failPayment(item);
-          return;
-        }
-        document.getElementById('payInfo').innerHTML = `订单号：${html(item.out_trade_no)}<br>应付金额：¥${money(item.pay_amount)}<br>状态：${html(item.status)}<br>正在等待到账确认...`;
+        const item = await api('/orders/' + encodeURIComponent(outTradeNo)); state.currentOrder = item; renderCountdown(item);
+        if (item.status === 'COMPLETED') return finishPayment(item);
+        if (item.status === 'CANCELLED') return showCancelled();
+        if (item.status === 'EXPIRED' || item.status === 'FAILED') { stopPolling(); stopCountdown(); setTimeout(() => { location.href = paymentRetryPath(item); }, 1800); return; }
       } catch (_) {}
-      state.payPollTimer = setTimeout(() => pollPayment(outTradeNo), 2000);
+      state.pollTimer = setTimeout(() => pollPayment(outTradeNo), 2000);
     }
-    function setTab(name) {
+    function setTab(name, push=true) {
+      state.tab = name;
       document.querySelectorAll('.tab').forEach(b => b.classList.toggle('active', b.dataset.tab === name));
-      document.querySelectorAll('.view').forEach(v => v.style.display = v.id === name ? (name === 'recharge' ? 'grid' : 'block') : 'none');
-      history.replaceState(null, '', name === 'recharge' ? '/purchase' : '/' + (name === 'plans' ? 'subscriptions' : 'orders'));
+      document.getElementById('rechargePanel').hidden = name !== 'recharge';
+      document.getElementById('plansPanel').hidden = name !== 'plans';
+      setVisible(name === 'orders' ? 'ordersView' : 'purchaseView');
+      if (push) history.replaceState(null, '', name === 'recharge' ? '/purchase' : '/' + (name === 'plans' ? 'subscriptions' : 'orders'));
     }
     function renderConfig() {
-      document.getElementById('amounts').innerHTML = state.config.quick_amounts.map(v => `<button class="amount ${state.amount===v?'active':''}" data-amount="${html(v)}">¥${money(v)}</button>`).join('');
+      const quick = state.config.quick_amounts || [];
+      document.getElementById('amounts').innerHTML = quick.map(v => `<button class="amount ${Number(state.amount)===Number(v)?'active':''}" data-amount="${html(v)}">${money(v).replace(/\.00$/,'')}</button>`).join('');
       document.querySelectorAll('.amount').forEach(b => b.onclick = () => { state.amount = Number(b.dataset.amount); document.getElementById('customAmount').value=''; renderConfig(); });
       if (!state.method && state.config.methods[0]) state.method = state.config.methods[0].id;
-      document.getElementById('methods').innerHTML = state.config.methods.map(m => `<button class="method ${state.method===m.id?'active':''}" data-method="${html(m.id)}">${html(m.label)}</button>`).join('');
+      document.getElementById('methods').innerHTML = (state.config.methods || []).map(m => `<button class="method ${state.method===m.id?'active':''}" data-method="${html(m.id)}"><span class="wechat-mark">✓</span>${html(m.label)}</button>`).join('');
       document.querySelectorAll('.method').forEach(b => b.onclick = () => { state.method = b.dataset.method; renderConfig(); });
-      const m = state.config.methods.find(x => x.id === state.method);
-      document.getElementById('methodNotice').textContent = m ? m.description : '请选择支付方式。';
-      document.getElementById('createWarning').textContent = watcherWarning();
-      renderPlans();
+      const amount = selectedAmount(); document.getElementById('summaryAmount').textContent = money(amount); document.getElementById('submitAmount').textContent = money(amount);
+      document.getElementById('methodNotice').textContent = '请使用微信支付，并支付准确金额；多个同金额订单会自动分配 0.01 元内的唯一金额。';
+      document.getElementById('createWarning').textContent = watcherWarning(); renderPlans();
     }
     function renderPlans() {
-      const planHtml = (state.config.plans || []).map(p => `<div class="plan"><strong>${html(p.name)}</strong><div class="price">¥${money(p.price)}</div><div class="notice">${html(p.group_name || '')} ${html(p.validity_days)}${html(p.validity_unit)}</div><button class="btn" data-plan="${html(p.id)}" style="width:100%;margin-top:14px">立即开通/续费</button></div>`).join('');
+      const planHtml = (state.config.plans || []).map(p => `<div class="plan"><strong>${html(p.name)}</strong><div class="price">¥${money(p.price)}</div><div class="notice">${html(p.group_name || '')} ${html(p.validity_days)}${html(p.validity_unit)}</div><button class="btn" data-plan="${html(p.id)}">立即开通 / 续费</button></div>`).join('');
       document.getElementById('plansList').innerHTML = planHtml || '<p class="notice">暂无可售套餐，请先在 Sub2API 后台创建 subscription_plans。</p>';
       document.getElementById('planWarning').textContent = watcherWarning();
       document.querySelectorAll('[data-plan]').forEach(b => b.onclick = () => createOrder({order_type:'subscription', plan_id:Number(b.dataset.plan)}));
@@ -1773,47 +1847,37 @@ INDEX_HTML = """<!doctype html>
       document.getElementById('ordersTable').innerHTML = `<table><thead><tr><th>订单</th><th>类型</th><th>金额</th><th>状态</th><th>时间</th></tr></thead><tbody>${state.orders.map(o => `<tr><td>${html(o.out_trade_no)}</td><td>${html(o.order_type)}</td><td>¥${money(o.pay_amount)}</td><td><span class="pill ${safeClass(o.status)}">${html(o.status)}</span></td><td>${html((o.completed_at || o.paid_at || o.expires_at || '').replace('T',' ').slice(0,19))}</td></tr>`).join('')}</tbody></table>`;
     }
     async function refresh() {
-      showError('');
-      state.config = await api('/config');
-      state.watcherStatus = state.config.watcher_status || null;
+      showError(''); state.config = await api('/config'); state.watcherStatus = state.config.watcher_status || null;
+      document.getElementById('balanceText').textContent = money(state.config.user_balance ?? 0); document.getElementById('balanceInline').textContent = money(state.config.user_balance ?? 0);
       try { state.watcherStatus = await api('/watch/public-status'); } catch (_) {}
-      renderWatchStatus();
-      if (!state.amount && state.config.quick_amounts.length) state.amount = state.config.quick_amounts[0];
-      if (!state.method && state.config.methods.length) state.method = state.config.methods[0].id;
-      renderConfig();
-      state.orders = await api('/orders/my');
-      renderOrders();
+      renderWatchStatus(); if (!state.amount && (state.config.quick_amounts || []).length) state.amount = state.config.quick_amounts[0]; if (!state.method && (state.config.methods || []).length) state.method = state.config.methods[0].id;
+      renderConfig(); state.orders = await api('/orders/my'); renderOrders();
     }
     async function createOrder(body) {
       try {
-        showError('');
-        if (!state.method) throw new Error('请先选择支付方式');
+        showError(''); if (!state.method) throw new Error('请先选择支付方式');
         const payload = Object.assign({payment_type:state.method}, body);
-        if (!payload.order_type || payload.order_type === 'balance') {
-          const custom = document.getElementById('customAmount').value.trim();
-          payload.order_type = 'balance';
-          payload.amount = custom ? Number(custom) : state.amount;
-        }
-        const order = await api('/orders', {method:'POST', body:JSON.stringify(payload)});
-        openPay(order);
-        await refresh();
+        if (!payload.order_type || payload.order_type === 'balance') { const amount = selectedAmount(); if (!amount || amount <= 0) throw new Error('请输入有效充值金额'); payload.order_type = 'balance'; payload.amount = amount; }
+        const order = await api('/orders', {method:'POST', body:JSON.stringify(payload)}); openPay(order); await refresh();
       } catch (err) { showError(err); }
     }
     function openPay(order) {
-      const qrUrl = order.qr_image_url || ('/qrpay/api/orders/' + encodeURIComponent(order.out_trade_no) + '/qr.png');
-      document.getElementById('payInfo').innerHTML = `订单号：${html(order.out_trade_no)}<br>应付金额：¥${money(order.pay_amount)}<br>状态：${html(order.status)}<br>请直接扫描下方收款码，系统会自动确认到账。`;
-      document.getElementById('payQr').src = qrUrl;
-      document.getElementById('payModal').classList.add('open');
-      stopPayPolling();
-      if (state.redirectTimer) clearTimeout(state.redirectTimer);
-      pollPayment(order.out_trade_no);
+      state.currentOrder = order; setVisible('waitingView'); renderCountdown(order); stopPolling(); stopCountdown(); pollPayment(order.out_trade_no); state.countdownTimer = setInterval(() => renderCountdown(state.currentOrder), 1000);
+      const payUrl = order.pay_url || ('/qrpay/pay/' + encodeURIComponent(order.out_trade_no));
+      const win = window.open(payUrl, '_blank', 'noopener,noreferrer');
+      if (!win) showError('浏览器阻止了新窗口，请点击“重新打开支付页面”。');
     }
+    async function cancelCurrentOrder() { if (!state.currentOrder) return; const item = await api('/orders/' + encodeURIComponent(state.currentOrder.out_trade_no) + '/cancel', {method:'POST', body:'{}'}); state.currentOrder = item; showCancelled(); }
     document.querySelectorAll('.tab').forEach(b => b.onclick = () => setTab(b.dataset.tab));
-    document.getElementById('refreshBtn').onclick = refresh;
     document.getElementById('createRecharge').onclick = () => createOrder({order_type:'balance'});
-    document.getElementById('closeModal').onclick = () => { stopPayPolling(); if (state.redirectTimer) clearTimeout(state.redirectTimer); document.getElementById('payModal').classList.remove('open'); };
     document.getElementById('customAmount').oninput = () => { state.amount = null; renderConfig(); };
-    if (location.pathname.includes('orders')) setTab('orders'); else if (location.pathname.includes('subscriptions')) setTab('plans'); else setTab('recharge');
+    document.getElementById('reopenPay').onclick = () => { if (state.currentOrder) window.open(state.currentOrder.pay_url || ('/qrpay/pay/' + encodeURIComponent(state.currentOrder.out_trade_no)), '_blank', 'noopener,noreferrer'); };
+    document.getElementById('refreshOrder').onclick = () => state.currentOrder && pollPayment(state.currentOrder.out_trade_no);
+    document.getElementById('cancelOrder').onclick = () => document.getElementById('cancelModal').classList.add('open');
+    document.getElementById('keepOrder').onclick = () => document.getElementById('cancelModal').classList.remove('open');
+    document.getElementById('confirmCancel').onclick = () => cancelCurrentOrder().catch(showError);
+    document.getElementById('confirmCancelled').onclick = () => { setTab('recharge'); refresh().catch(showError); };
+    if (location.pathname.includes('orders')) setTab('orders', false); else if (location.pathname.includes('subscriptions')) setTab('plans', false); else setTab('recharge', false);
     refresh().catch(showError);
   </script>
 </body>
@@ -1867,7 +1931,6 @@ ADMIN_HTML = """<!doctype html>
       <select id="paymentType">
         <option value="">全部方式</option>
         <option value="wechat_code">微信收款码</option>
-        <option value="alipay_code">支付宝收款码</option>
       </select>
       <select id="status">
         <option value="">全部状态</option>
