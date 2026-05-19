@@ -65,6 +65,49 @@ class QrpaySecurityTests(unittest.TestCase):
         self.assertNotIn("javascript:alert", html)
         self.assertIn('/qrpay/api/orders/zqr_20260519safe/qr.png', html)
 
+    def test_public_order_payload_includes_wechat_fixed_qr_image_url(self):
+        row = {
+            "id": 1,
+            "out_trade_no": "zqr_20260519safe",
+            "amount": Decimal("10.00"),
+            "pay_amount": Decimal("10.00"),
+            "payment_type": "wechat_code",
+            "order_type": "balance",
+            "status": "PENDING",
+            "pay_url": "/qrpay/pay/zqr_20260519safe",
+            "expires_at": None,
+            "paid_at": None,
+            "completed_at": None,
+            "plan_id": None,
+            "subscription_group_id": None,
+            "subscription_days": None,
+        }
+        with patch.object(self.app.settings, "wechat_qr_image_url", "https://cdn.example/wechat-fixed.png"):
+            payload = self.app.public_order_payload(row)
+        self.assertEqual(payload["qr_image_url"], "https://cdn.example/wechat-fixed.png")
+        self.assertEqual(payload["pay_url"], "/qrpay/pay/zqr_20260519safe")
+
+    def test_public_order_payload_rejects_unsafe_wechat_qr_image_url(self):
+        row = {
+            "id": 1,
+            "out_trade_no": "zqr_20260519safe",
+            "amount": Decimal("10.00"),
+            "pay_amount": Decimal("10.00"),
+            "payment_type": "wechat_code",
+            "order_type": "balance",
+            "status": "PENDING",
+            "pay_url": "/qrpay/pay/zqr_20260519safe",
+            "expires_at": None,
+            "paid_at": None,
+            "completed_at": None,
+            "plan_id": None,
+            "subscription_group_id": None,
+            "subscription_days": None,
+        }
+        with patch.object(self.app.settings, "wechat_qr_image_url", "javascript:alert(1)"):
+            payload = self.app.public_order_payload(row)
+        self.assertEqual(payload["qr_image_url"], "")
+
     def test_bounded_json_truncates_large_payloads(self):
         value = {"blob": "x" * 40000}
         payload = self.app.bounded_json(value, max_bytes=128)

@@ -19,6 +19,11 @@ class StaticUiInjectionTests(unittest.TestCase):
         self.assertIn("套餐订阅", index_html_source)
         self.assertIn("我的订单", index_html_source)
         self.assertIn("/watch/public-status", index_html_source)
+        self.assertIn("order.qr_image_url", index_html_source)
+        self.assertIn("请直接扫描下方收款码", index_html_source)
+        self.assertIn("failPayment(item)", index_html_source)
+        self.assertNotIn("打开支付页", index_html_source)
+        self.assertNotIn("id=\"payLink\"", index_html_source)
 
     def test_qrpay_admin_route_hides_floating_docs(self):
         source = (

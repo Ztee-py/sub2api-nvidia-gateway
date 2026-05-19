@@ -200,6 +200,12 @@ def safe_public_url(value: str, *, allow_absolute_https: bool = True) -> str:
     return ""
 
 
+def payment_qr_image_url(row: dict[str, Any]) -> str:
+    if row.get("payment_type") == "wechat_code":
+        return safe_public_url(settings.wechat_qr_image_url)
+    return f"/qrpay/api/orders/{safe_order_no(str(row['out_trade_no']))}/qr.png"
+
+
 def bounded_json(value: Any, max_bytes: int = 32768) -> Any:
     try:
         raw = json.dumps(value, ensure_ascii=False, default=str)
@@ -710,6 +716,7 @@ def public_order_payload(row: dict[str, Any]) -> dict[str, Any]:
         "order_type": row["order_type"],
         "status": row["status"],
         "pay_url": safe_public_url(row.get("pay_url") or ""),
+        "qr_image_url": payment_qr_image_url(row),
         "expires_at": row["expires_at"].isoformat() if row.get("expires_at") else None,
         "paid_at": row["paid_at"].isoformat() if row.get("paid_at") else None,
         "completed_at": row["completed_at"].isoformat() if row.get("completed_at") else None,
@@ -1173,6 +1180,10 @@ def order_qr(out_trade_no: str) -> Response:
         row = conn.execute("SELECT * FROM payment_orders WHERE out_trade_no=%s", (out_trade_no,)).fetchone()
     if not row:
         raise HTTPException(404, "order not found")
+    if row["payment_type"] == "wechat_code":
+        wechat_img = safe_public_url(settings.wechat_qr_image_url)
+        if wechat_img:
+            return RedirectResponse(wechat_img, status_code=302)
     data = row["pay_url"] or row["qr_code"]
     if row["payment_type"] == "wechat_code" and settings.wechat_pay_url:
         data = settings.wechat_pay_url
@@ -1596,7 +1607,6 @@ INDEX_HTML = """<!doctype html>
       <h2>扫码支付</h2>
       <div id="payInfo" class="notice"></div>
       <img id="payQr" class="qr" alt="payment qrcode">
-      <a id="payLink" class="btn" target="_blank" rel="noopener" style="display:block;text-align:center;text-decoration:none">打开支付页</a>
       <button class="btn" id="closeModal" style="width:100%;margin-top:10px;background:#374151">关闭</button>
     </div>
   </div>
@@ -1674,10 +1684,19 @@ INDEX_HTML = """<!doctype html>
       rememberSuccess(item);
       const label = item.order_type === 'subscription' ? '订阅已开通' : '充值已到账';
       document.getElementById('payInfo').innerHTML = `<span class="success">${html(label)}</span><br>订单号：${html(item.out_trade_no)}<br>5 秒后返回控制台。`;
-      document.getElementById('payLink').style.display = 'none';
       refresh().catch(() => {});
       if (state.redirectTimer) clearTimeout(state.redirectTimer);
       state.redirectTimer = setTimeout(() => { location.href = '/dashboard'; }, 5000);
+    }
+    function paymentRetryPath(item) {
+      return item.order_type === 'subscription' ? '/subscriptions' : '/purchase';
+    }
+    function failPayment(item) {
+      stopPayPolling();
+      const reason = item.status === 'EXPIRED' ? '订单已过期' : '支付失败';
+      document.getElementById('payInfo').innerHTML = `<span class="error">${html(reason)}</span><br>订单号：${html(item.out_trade_no)}<br>应付金额：¥${money(item.pay_amount)}<br>5 秒后返回充值/订阅页面。`;
+      if (state.redirectTimer) clearTimeout(state.redirectTimer);
+      state.redirectTimer = setTimeout(() => { location.href = paymentRetryPath(item); }, 5000);
     }
     async function pollPayment(outTradeNo) {
       try {
@@ -1687,8 +1706,7 @@ INDEX_HTML = """<!doctype html>
           return;
         }
         if (item.status === 'EXPIRED' || item.status === 'FAILED') {
-          stopPayPolling();
-          document.getElementById('payInfo').innerHTML = `订单号：${html(item.out_trade_no)}<br>应付金额：¥${money(item.pay_amount)}<br>状态：${html(item.status)}`;
+          failPayment(item);
           return;
         }
         document.getElementById('payInfo').innerHTML = `订单号：${html(item.out_trade_no)}<br>应付金额：¥${money(item.pay_amount)}<br>状态：${html(item.status)}<br>正在等待到账确认...`;
@@ -1749,18 +1767,18 @@ INDEX_HTML = """<!doctype html>
       } catch (err) { showError(err); }
     }
     function openPay(order) {
-      document.getElementById('payInfo').innerHTML = `订单号：${html(order.out_trade_no)}<br>应付金额：¥${money(order.pay_amount)}<br>状态：${html(order.status)}`;
-      document.getElementById('payQr').src = '/qrpay/api/orders/' + order.out_trade_no + '/qr.png';
-      document.getElementById('payLink').href = order.pay_url;
-      document.getElementById('payLink').style.display = 'block';
+      const qrUrl = order.qr_image_url || ('/qrpay/api/orders/' + encodeURIComponent(order.out_trade_no) + '/qr.png');
+      document.getElementById('payInfo').innerHTML = `订单号：${html(order.out_trade_no)}<br>应付金额：¥${money(order.pay_amount)}<br>状态：${html(order.status)}<br>请直接扫描下方收款码，系统会自动确认到账。`;
+      document.getElementById('payQr').src = qrUrl;
       document.getElementById('payModal').classList.add('open');
       stopPayPolling();
+      if (state.redirectTimer) clearTimeout(state.redirectTimer);
       pollPayment(order.out_trade_no);
     }
     document.querySelectorAll('.tab').forEach(b => b.onclick = () => setTab(b.dataset.tab));
     document.getElementById('refreshBtn').onclick = refresh;
     document.getElementById('createRecharge').onclick = () => createOrder({order_type:'balance'});
-    document.getElementById('closeModal').onclick = () => { stopPayPolling(); document.getElementById('payModal').classList.remove('open'); };
+    document.getElementById('closeModal').onclick = () => { stopPayPolling(); if (state.redirectTimer) clearTimeout(state.redirectTimer); document.getElementById('payModal').classList.remove('open'); };
     document.getElementById('customAmount').oninput = () => { state.amount = null; renderConfig(); };
     if (location.pathname.includes('orders')) setTab('orders'); else if (location.pathname.includes('subscriptions')) setTab('plans'); else setTab('recharge');
     refresh().catch(showError);
