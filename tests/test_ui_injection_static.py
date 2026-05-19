@@ -46,7 +46,7 @@ class StaticUiInjectionTests(unittest.TestCase):
         self.assertIn("sidebarPaymentScore", source)
         self.assertIn('path === "/payment"', source)
         self.assertIn("zteapiPaymentHidden", source)
-        self.assertIn("zteapiFullNavigationBound", source)
+        self.assertIn("zteapiQrpayNavigationBound", source)
         self.assertIn(r'"\u5145\u503c/\u8ba2\u9605"', source)
         self.assertIn("SIDEBAR_PAYMENT_SELECTOR", source)
         self.assertIn("collectSidebarPaymentLinks", source)
@@ -54,18 +54,29 @@ class StaticUiInjectionTests(unittest.TestCase):
         self.assertIn('document.addEventListener("pointerdown", handlePaymentNavigationClick, true)', source)
         self.assertIn('document.addEventListener("click", handlePaymentNavigationClick, true)', source)
         self.assertIn("forceQrpayPageIfNeeded", source)
+        self.assertIn("mountQrpaySubpage", source)
+        self.assertIn("openQrpaySubpage", source)
+        self.assertIn("qrpayFramePathForRole", source)
+        self.assertIn('data-zteapi-qrpay-subpage="1"', source)
+        self.assertIn("zteapi-qrpay-frame", source)
         self.assertIn("isNativeSub2ApiPaymentView", source)
         self.assertIn("compactElementTextForPaymentRole", source)
         self.assertIn(r"\u5145\u503c\u529f\u80fd\u6682\u672a\u5f00\u653e", source)
-        self.assertIn('window.location.replace(target)', source)
+        self.assertIn("history.pushState({ zteapiQrpaySubpage: role }", source)
+        self.assertNotIn("window.location.replace(target)", source)
 
-    def test_payment_route_is_served_by_qrpay(self):
+    def test_payment_route_is_served_by_dashboard_shell_with_qrpay_prefix(self):
         caddy = (ROOT / "cloud-deploy" / "Caddyfile").read_text(encoding="utf-8")
         qrpay_app = (ROOT / "cloud-deploy" / "qrpay-bridge" / "app.py").read_text(encoding="utf-8")
 
+        self.assertIn("handle_path /qrpay*", caddy)
+        self.assertIn("reverse_proxy qrpay-bridge:8095", caddy)
         self.assertIn("@qrpay_pages path /purchase /payment /orders /subscriptions", caddy)
         self.assertIn('header Cache-Control "no-store"', caddy)
+        self.assertIn("reverse_proxy html-injector:8090", caddy)
         self.assertIn('@app.get("/payment", response_class=HTMLResponse)', qrpay_app)
+        self.assertIn("qrpay-embedded", qrpay_app)
+        self.assertIn("routePath(path)", qrpay_app)
 
 
 if __name__ == "__main__":

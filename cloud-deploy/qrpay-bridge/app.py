@@ -1650,13 +1650,17 @@ INDEX_HTML = """<!doctype html>
     :root { color-scheme: light; --text:#111827; --muted:#6b7280; --line:#e3e7ee; --bg:#f7fafb; --panel:#fff; --wechat:#22c55e; --wechat-dark:#16a34a; --teal:#13b8a6; --teal-dark:#0f8f83; --danger:#ef4444; }
     * { box-sizing:border-box; }
     body { margin:0; font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","Microsoft YaHei",Arial,sans-serif; color:var(--text); background:linear-gradient(135deg,#e8fffb 0,#f9fbfd 42%,#fff 100%); }
+    body.qrpay-embedded { background:#f7fafb; }
     .shell { min-height:100vh; padding:0 0 56px; }
+    body.qrpay-embedded .shell { min-height:auto; padding:0 0 24px; }
     .topbar { min-height:80px; display:flex; align-items:center; justify-content:space-between; gap:18px; padding:18px clamp(18px,4vw,32px); background:rgba(255,255,255,.9); border-bottom:1px solid #edf2f7; }
+    body.qrpay-embedded .topbar { display:none; }
     h1 { margin:0; font-size:28px; line-height:1.12; letter-spacing:0; }
     .sub { margin-top:4px; color:#6b7280; font-size:14px; }
     .top-actions { display:flex; align-items:center; gap:12px; flex-wrap:wrap; justify-content:flex-end; }
     .balance-chip { display:inline-flex; align-items:center; gap:8px; min-height:40px; padding:0 16px; border-radius:999px; background:#ecfdf5; color:#047857; font-weight:900; }
     .content { width:min(1120px, calc(100vw - 28px)); margin:42px auto 0; }
+    body.qrpay-embedded .content { width:min(1120px, calc(100vw - 18px)); margin:18px auto 0; }
     .tabs { display:grid; grid-template-columns:1fr 1fr; gap:0; margin-bottom:32px; background:#f1f5f9; border-radius:14px; padding:4px; }
     .tab { min-height:52px; border:0; border-radius:10px; background:transparent; color:#667085; font:inherit; font-size:18px; cursor:pointer; }
     .tab.active { background:#fff; color:#111827; box-shadow:0 1px 4px rgba(15,23,42,.12); }
@@ -1765,6 +1769,12 @@ INDEX_HTML = """<!doctype html>
   <div class="modal" id="cancelModal"><div class="dialog"><h3>取消订单？</h3><p>取消后本次二维码将失效。如果您已经付款，请不要取消，等待系统自动确认。</p><div class="dialog-actions"><button class="btn secondary" id="keepOrder">继续等待</button><button class="btn" id="confirmCancel">确认取消</button></div></div></div>
   <script>
     const state = { config:null, watcherStatus:null, amount:null, method:null, orders:[], currentOrder:null, pollTimer:null, countdownTimer:null, redirectTimer:null, tab:'recharge' };
+    const isEmbedded = new URLSearchParams(location.search).get('embed') === '1';
+    if (isEmbedded) document.body.classList.add('qrpay-embedded');
+    function routePath(path) { return isEmbedded ? '/qrpay' + path + '?embed=1' : path; }
+    function replaceRoute(path) { history.replaceState(null, '', routePath(path)); }
+    function goDashboard() { if (isEmbedded && window.parent && window.parent !== window) window.parent.location.href = '/dashboard'; else location.href = '/dashboard'; }
+    function goRetry(item) { location.href = routePath(paymentRetryPath(item)); }
     function token() {
       const cookies = Object.fromEntries(document.cookie.split(';').map(v => v.trim()).filter(Boolean).map(v => { const i = v.indexOf('='); return i === -1 ? [decodeURIComponent(v), ''] : [decodeURIComponent(v.slice(0, i)), decodeURIComponent(v.slice(i + 1))]; }));
       const stores = [localStorage, sessionStorage];
@@ -1798,9 +1808,9 @@ INDEX_HTML = """<!doctype html>
     function rememberSuccess(item) { try { sessionStorage.setItem('zteapi_qrpay_success', JSON.stringify({ out_trade_no:item.out_trade_no, amount:item.amount, pay_amount:item.pay_amount, order_type:item.order_type })); } catch (_) {} }
     function stopPolling() { if (state.pollTimer) clearTimeout(state.pollTimer); state.pollTimer = null; }
     function stopCountdown() { if (state.countdownTimer) clearInterval(state.countdownTimer); state.countdownTimer = null; }
-    function finishPayment(item) { stopPolling(); stopCountdown(); rememberSuccess(item); if (state.redirectTimer) clearTimeout(state.redirectTimer); state.redirectTimer = setTimeout(() => { location.href = '/dashboard'; }, 1200); }
+    function finishPayment(item) { stopPolling(); stopCountdown(); rememberSuccess(item); if (state.redirectTimer) clearTimeout(state.redirectTimer); state.redirectTimer = setTimeout(goDashboard, 1200); }
     function paymentRetryPath(item) { return item && item.order_type === 'subscription' ? '/subscriptions' : '/purchase'; }
-    function showCancelled() { stopPolling(); stopCountdown(); document.getElementById('cancelModal').classList.remove('open'); setVisible('cancelledView'); history.replaceState(null, '', '/purchase'); refresh().catch(() => {}); }
+    function showCancelled() { stopPolling(); stopCountdown(); document.getElementById('cancelModal').classList.remove('open'); setVisible('cancelledView'); replaceRoute('/purchase'); refresh().catch(() => {}); }
     function renderCountdown(item) {
       const target = item || state.currentOrder; if (!target) return;
       const box = document.getElementById('waitTimer');
@@ -1813,7 +1823,7 @@ INDEX_HTML = """<!doctype html>
         const item = await api('/orders/' + encodeURIComponent(outTradeNo)); state.currentOrder = item; renderCountdown(item);
         if (item.status === 'COMPLETED') return finishPayment(item);
         if (item.status === 'CANCELLED') return showCancelled();
-        if (item.status === 'EXPIRED' || item.status === 'FAILED') { stopPolling(); stopCountdown(); setTimeout(() => { location.href = paymentRetryPath(item); }, 1800); return; }
+        if (item.status === 'EXPIRED' || item.status === 'FAILED') { stopPolling(); stopCountdown(); setTimeout(() => goRetry(item), 1800); return; }
       } catch (_) {}
       state.pollTimer = setTimeout(() => pollPayment(outTradeNo), 2000);
     }
@@ -1823,7 +1833,7 @@ INDEX_HTML = """<!doctype html>
       document.getElementById('rechargePanel').hidden = name !== 'recharge';
       document.getElementById('plansPanel').hidden = name !== 'plans';
       setVisible(name === 'orders' ? 'ordersView' : 'purchaseView');
-      if (push) history.replaceState(null, '', name === 'recharge' ? '/purchase' : '/' + (name === 'plans' ? 'subscriptions' : 'orders'));
+      if (push) replaceRoute(name === 'recharge' ? '/purchase' : '/' + (name === 'plans' ? 'subscriptions' : 'orders'));
     }
     function renderConfig() {
       const quick = state.config.quick_amounts || [];

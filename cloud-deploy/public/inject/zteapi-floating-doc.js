@@ -10,7 +10,8 @@
     /^\/email-verify(?:\/|$)/,
     /^\/forgot-password(?:\/|$)/,
     /^\/reset-password(?:\/|$)/,
-    /^\/legal(?:\/|$)/
+    /^\/legal(?:\/|$)/,
+    /^\/qrpay(?:\/|$)/
   ];
 
   function docsUrl() {
@@ -70,6 +71,27 @@
         event.preventDefault();
         event.stopImmediatePropagation();
         window.location.assign(nextTarget);
+      },
+      true
+    );
+  }
+
+  function forceQrpaySubpageNavigation(link, role) {
+    if (!link) return;
+    const normalizedRole = role || "recharge";
+    const target = qrpayTargetForRole(normalizedRole);
+    link.dataset.zteapiQrpayNavigation = normalizedRole;
+    link.setAttribute("href", target);
+    link.setAttribute("data-zteapi-stable-link", "1");
+    if (link.dataset.zteapiQrpayNavigationBound === "1") return;
+    link.dataset.zteapiQrpayNavigationBound = "1";
+    link.addEventListener(
+      "click",
+      function (event) {
+        event.preventDefault();
+        event.stopImmediatePropagation();
+        if (typeof event.stopPropagation === "function") event.stopPropagation();
+        openQrpaySubpage(link.dataset.zteapiQrpayNavigation || normalizedRole, true);
       },
       true
     );
@@ -160,11 +182,11 @@
 
   function patchNonSidebarPaymentLink(link, role, path) {
     if (path === "/payment" || role === "recharge") {
-      forceFullNavigation(link, "/purchase");
+      forceQrpaySubpageNavigation(link, "recharge");
     } else if (role === "plans") {
-      forceFullNavigation(link, "/subscriptions");
+      forceQrpaySubpageNavigation(link, "plans");
     } else if (role === "orders") {
-      forceFullNavigation(link, "/orders");
+      forceQrpaySubpageNavigation(link, "orders");
     }
   }
 
@@ -178,6 +200,17 @@
     if (path === "/subscriptions") return "/subscriptions";
     if (path === "/orders") return "/orders";
     return "/purchase";
+  }
+
+  function qrpayRoleForPath(path) {
+    if (path === "/subscriptions") return "plans";
+    if (path === "/orders") return "orders";
+    return "recharge";
+  }
+
+  function qrpayFramePathForRole(role) {
+    const target = qrpayTargetForRole(role);
+    return "/qrpay" + target + "?embed=1";
   }
 
   function isQrpayPaymentDocument() {
@@ -198,6 +231,63 @@
     ]);
   }
 
+  function qrpaySubpageContainer() {
+    return document.querySelector('[data-zteapi-qrpay-subpage="1"]');
+  }
+
+  function findDashboardMain() {
+    const main =
+      document.querySelector('main:not(.shell)') ||
+      document.querySelector('[role="main"]:not(.shell)') ||
+      document.querySelector("main") ||
+      document.querySelector('[role="main"]');
+    if (!main || main.closest("iframe")) return null;
+    if (main.classList && main.classList.contains("shell") && isQrpayPaymentDocument()) return null;
+    return main;
+  }
+
+  function updateQrpayHistory(role, push) {
+    const target = qrpayTargetForRole(role);
+    if (window.location.pathname === target) return;
+    if (push) {
+      history.pushState({ zteapiQrpaySubpage: role }, "", target);
+    } else {
+      history.replaceState({ zteapiQrpaySubpage: role }, "", target);
+    }
+  }
+
+  function mountQrpaySubpage(role) {
+    if (!document.body || isQrpayPaymentDocument() || /^\/admin(?:\/|$)/.test(window.location.pathname || "/")) return false;
+    const main = findDashboardMain();
+    if (!main) return false;
+
+    const normalizedRole = role || qrpayRoleForPath(window.location.pathname || "/");
+    const framePath = qrpayFramePathForRole(normalizedRole);
+    const existing = qrpaySubpageContainer();
+    const existingFrame = existing && existing.querySelector("iframe");
+    if (existing && existingFrame) {
+      existing.dataset.zteapiQrpayRole = normalizedRole;
+      if (existingFrame.getAttribute("src") !== framePath) existingFrame.setAttribute("src", framePath);
+      return true;
+    }
+
+    main.innerHTML = [
+      '<section class="zteapi-qrpay-subpage" data-zteapi-qrpay-subpage="1" data-zteapi-qrpay-role="' + normalizedRole + '">',
+      '<iframe class="zteapi-qrpay-frame" src="' + framePath + '" title="' + MAIN_PAYMENT_LABEL + '" loading="eager"></iframe>',
+      "</section>"
+    ].join("");
+    return true;
+  }
+
+  function openQrpaySubpage(role, push) {
+    const normalizedRole = role || "recharge";
+    updateQrpayHistory(normalizedRole, Boolean(push));
+    if (mountQrpaySubpage(normalizedRole)) return true;
+    setTimeout(() => mountQrpaySubpage(normalizedRole), 120);
+    setTimeout(() => mountQrpaySubpage(normalizedRole), 450);
+    return false;
+  }
+
   function looksLikePaymentControl(node) {
     if (!node || !node.matches) return false;
     const path = elementPath(node);
@@ -214,14 +304,9 @@
     if ((!QRPAY_PAGE_PATHS.includes(path) && !nativePaymentView) || /^\/admin(?:\/|$)/.test(path)) return false;
     if (isQrpayPaymentDocument()) return false;
 
-    const target = nativePaymentView ? "/purchase" : qrpayTargetForPath(path);
-    const targetUrl = new URL(target, window.location.origin).href;
-    if (window.location.href === targetUrl) {
-      window.location.reload();
-    } else {
-      window.location.replace(target);
-    }
-    return true;
+    const role = nativePaymentView ? "recharge" : qrpayRoleForPath(path);
+    if (path !== qrpayTargetForRole(role)) updateQrpayHistory(role, false);
+    return mountQrpaySubpage(role);
   }
 
   function sidebarPaymentPatchTarget(node) {
@@ -276,7 +361,7 @@
 
     sidebarLinks.sort((a, b) => sidebarPaymentScore(a) - sidebarPaymentScore(b) || a.index - b.index);
     const main = sidebarLinks[0].link;
-    forceFullNavigation(main, "/purchase");
+    forceQrpaySubpageNavigation(main, "recharge");
     setPaymentMainLabel(main);
     main.style.display = "";
     main.removeAttribute("aria-hidden");
@@ -315,7 +400,7 @@
       event.preventDefault();
       event.stopImmediatePropagation();
       if (typeof event.stopPropagation === "function") event.stopPropagation();
-      window.location.assign(qrpayTargetForRole(role));
+      openQrpaySubpage(role, true);
     }
   }
 
@@ -385,7 +470,7 @@
   }
 
   function refresh() {
-    if (forceQrpayPageIfNeeded()) return;
+    forceQrpayPageIfNeeded();
     const dock = ensureDock();
     if (!dock) return;
     const docs = dock.querySelector(".zteapi-floating-doc");

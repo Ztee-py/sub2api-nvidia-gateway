@@ -51,7 +51,9 @@
 	@qrpay_pages path /purchase /payment /orders /subscriptions
 	handle @qrpay_pages {
 		header Cache-Control "no-store"
-		reverse_proxy qrpay-bridge:8095
+		reverse_proxy html-injector:8090 {
+			flush_interval -1
+		}
 	}
 
 	@responses_api path /v1/responses
