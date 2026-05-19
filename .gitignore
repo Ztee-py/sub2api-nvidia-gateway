@@ -33,6 +33,7 @@ cloud-deploy/caddy_config/
 cloud-deploy/data/
 cloud-deploy/backups/
 local-backups/
+run-system.local.cmd
 
 release/
 
