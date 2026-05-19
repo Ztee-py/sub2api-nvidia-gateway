@@ -14,6 +14,7 @@
 		X-Frame-Options "SAMEORIGIN"
 		Referrer-Policy "strict-origin-when-cross-origin"
 		Permissions-Policy "camera=(), microphone=(), geolocation=()"
+		Vary "Accept-Encoding"
 		-Server
 	}
 
@@ -22,6 +23,7 @@
 	}
 
 	handle_path /docs* {
+		header Cache-Control "public, max-age=300, stale-while-revalidate=60"
 		root * /srv/docs
 		file_server
 	}
@@ -39,6 +41,7 @@
 	}
 
 	handle_path /qrpay-assets/* {
+		header Cache-Control "public, max-age=300, stale-while-revalidate=60"
 		root * /srv/inject
 		file_server
 	}
@@ -58,13 +61,23 @@
 
 	@responses_api path /v1/responses
 	handle @responses_api {
+		header Cache-Control "no-store"
 		reverse_proxy html-injector:8090 {
 			flush_interval -1
 		}
 	}
 
-	@sub2api_direct path /api/* /v1/* /health /assets/* /logo.png /favicon.ico /manifest* /robots.txt /sw.js
-	handle @sub2api_direct {
+	@static_assets path /assets/* /logo.png /favicon.ico /manifest* /robots.txt /sw.js
+	handle @static_assets {
+		header Cache-Control "public, max-age=300, stale-while-revalidate=60"
+		reverse_proxy sub2api:8080 {
+			flush_interval -1
+		}
+	}
+
+	@sub2api_dynamic path /api/* /v1/* /health
+	handle @sub2api_dynamic {
+		header Cache-Control "no-store"
 		reverse_proxy sub2api:8080 {
 			flush_interval -1
 		}

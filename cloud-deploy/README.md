@@ -42,7 +42,15 @@ Name: @ or desired subdomain
 Value: server public IP
 ```
 
-Caddy obtains and renews HTTPS certificates automatically. Cloudflare is optional. If you use Cloudflare, use `Full` or `Full (strict)` SSL/TLS, not `Flexible`.
+Caddy obtains and renews HTTPS certificates automatically. A Hong Kong anti-DDoS CDN or Cloudflare can sit in front of Caddy. If you use Cloudflare, use `Full` or `Full (strict)` SSL/TLS, not `Flexible`.
+
+After any CDN cutover, run:
+
+```bash
+BASE_URL=https://Zteapi.com ORIGIN_IP=YOUR_SERVER_IP EXPECTED_CDN=hongkong ./scripts/cdn-preflight.sh
+```
+
+Use `EXPECTED_CDN=cloudflare` after switching to Cloudflare. See [CDN cutover runbook](../docs/cdn-cutover.md) for cache, WAF and origin-lockdown rules.
 
 ## 3. Prepare Secrets
 

@@ -81,6 +81,25 @@ class StaticUiInjectionTests(unittest.TestCase):
         self.assertIn("qrpay-embedded", qrpay_app)
         self.assertIn("routePath(path)", qrpay_app)
 
+    def test_caddy_has_cdn_safe_cache_boundaries(self):
+        caddy = (ROOT / "cloud-deploy" / "Caddyfile").read_text(encoding="utf-8")
+
+        self.assertIn("@sub2api_dynamic path /api/* /v1/* /health", caddy)
+        self.assertIn("handle @sub2api_dynamic", caddy)
+        self.assertIn("@static_assets path /assets/* /logo.png /favicon.ico /manifest* /robots.txt /sw.js", caddy)
+        self.assertIn("handle @static_assets", caddy)
+        self.assertIn('header Cache-Control "no-store"', caddy)
+        self.assertIn('header Cache-Control "public, max-age=300, stale-while-revalidate=60"', caddy)
+
+    def test_cdn_preflight_checks_dynamic_routes(self):
+        source = (ROOT / "cloud-deploy" / "scripts" / "cdn-preflight.sh").read_text(encoding="utf-8")
+
+        self.assertIn('assert_header_contains "/payment" "HEAD" "Cache-Control" "no-store"', source)
+        self.assertIn('assert_header_contains "/qrpay/health" "GET" "Cache-Control" "no-store"', source)
+        self.assertIn('assert_header_contains "/qrpay/api/watch/public-status" "GET" "Cache-Control" "no-store"', source)
+        self.assertIn("EXPECTED_CDN", source)
+        self.assertIn("ORIGIN_IP", source)
+
 
 if __name__ == "__main__":
     unittest.main()
