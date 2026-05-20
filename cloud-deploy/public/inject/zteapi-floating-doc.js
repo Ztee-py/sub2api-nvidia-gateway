@@ -155,6 +155,11 @@
     return false;
   }
 
+  function closestPaymentManagedNode(node) {
+    if (!node || !node.closest) return null;
+    return node.closest("[data-zteapi-canonical-payment-link],[data-zteapi-canonical-payment-item],[data-zteapi-qrpay-navigation]");
+  }
+
   const MAIN_PAYMENT_LABEL = "\u5145\u503c/\u8ba2\u9605";
   const ORDER_PAYMENT_LABEL = "\u6211\u7684\u8ba2\u5355";
   const QRPAY_PAGE_PATHS = ["/purchase", "/payment", "/subscriptions", "/orders"];
@@ -188,6 +193,8 @@
     }
     link.dataset.zteapiPurchaseLink = "1";
     delete link.dataset.zteapiOrdersLink;
+    link.setAttribute("aria-label", MAIN_PAYMENT_LABEL);
+    link.setAttribute("title", MAIN_PAYMENT_LABEL);
   }
 
   function setOrdersMainLabel(link) {
@@ -197,6 +204,8 @@
     }
     link.dataset.zteapiOrdersLink = "1";
     delete link.dataset.zteapiPurchaseLink;
+    link.setAttribute("aria-label", ORDER_PAYMENT_LABEL);
+    link.setAttribute("title", ORDER_PAYMENT_LABEL);
   }
 
   function cleanClonedPaymentNode(node) {
@@ -206,6 +215,8 @@
     node.style.display = "";
     node.removeAttribute("aria-hidden");
     node.removeAttribute("tabindex");
+    node.removeAttribute("data-active");
+    node.removeAttribute("data-selected");
     if (node.dataset) {
       delete node.dataset.zteapiPaymentHidden;
       delete node.dataset.zteapiPurchaseLink;
@@ -216,7 +227,18 @@
       delete node.dataset.zteapiCanonicalPaymentItem;
       delete node.dataset.zteapiCanonicalPaymentLink;
     }
+    if (node.classList) {
+      Array.from(node.classList).forEach((className) => {
+        if (/(^|[-_:])(active|selected|current)([-_:]|$)/i.test(className)) node.classList.remove(className);
+        if (/emerald|teal|green/i.test(className)) node.classList.remove(className);
+      });
+    }
     node.querySelectorAll("[id]").forEach((child) => child.removeAttribute("id"));
+    node.querySelectorAll("[data-active],[data-selected],[aria-current]").forEach((child) => {
+      child.removeAttribute("data-active");
+      child.removeAttribute("data-selected");
+      child.removeAttribute("aria-current");
+    });
     node.querySelectorAll("[data-zteapi-payment-hidden],[data-zteapi-purchase-link],[data-zteapi-orders-link],[data-zteapi-qrpay-navigation-bound],[data-zteapi-qrpay-navigation],[data-zteapi-synth-payment-link],[data-zteapi-canonical-payment-item],[data-zteapi-canonical-payment-link]").forEach((child) => {
       delete child.dataset.zteapiPaymentHidden;
       delete child.dataset.zteapiPurchaseLink;
@@ -229,14 +251,77 @@
     });
   }
 
+  function scrubPaymentVisualState(node) {
+    if (!node) return;
+    [node].concat(Array.from(node.querySelectorAll ? node.querySelectorAll("*") : [])).forEach((item) => {
+      item.removeAttribute("aria-current");
+      item.removeAttribute("data-active");
+      item.removeAttribute("data-selected");
+      if (!item.classList) return;
+      Array.from(item.classList).forEach((className) => {
+        if (/(^|[-_:])(active|selected|current)([-_:]|$)/i.test(className)) item.classList.remove(className);
+        if (/emerald|teal|green/i.test(className)) item.classList.remove(className);
+      });
+    });
+  }
+
+  function userPaymentIconSvg(role, className) {
+    const cls = className ? ' class="' + className.replace(/"/g, "") + '"' : "";
+    if (role === "orders") {
+      return [
+        '<svg' + cls + ' viewBox="0 0 24 24" fill="none" aria-hidden="true">',
+        '<path d="M7 3.75h10A1.25 1.25 0 0 1 18.25 5v14.25l-2-1.1-2 1.1-2-1.1-2 1.1-2-1.1-2 1.1V5A1.25 1.25 0 0 1 7 3.75Z" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/>',
+        '<path d="M9 8.25h6M9 12h6M9 15.75h3.5" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/>',
+        "</svg>"
+      ].join("");
+    }
+    return [
+      '<svg' + cls + ' viewBox="0 0 24 24" fill="none" aria-hidden="true">',
+      '<path d="M12 21a9 9 0 1 0 0-18 9 9 0 0 0 0 18Z" stroke="currentColor" stroke-width="1.7"/>',
+      '<path d="M8.5 8.75h7M8.5 12h7M12 8.75v7.5M9.25 16.25h5.5" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/>',
+      "</svg>"
+    ].join("");
+  }
+
+  function setUserPaymentIcon(link, role) {
+    if (!link || !link.querySelector) return;
+    const svg = link.querySelector("svg");
+    const className = svg ? svg.getAttribute("class") || "" : "";
+    if (svg) {
+      svg.outerHTML = userPaymentIconSvg(role, className);
+      return;
+    }
+    const label = paymentLabelNode(link);
+    if (label && label.insertAdjacentHTML) {
+      label.insertAdjacentHTML("beforebegin", userPaymentIconSvg(role, ""));
+    }
+  }
+
+  function neutralSidebarReference() {
+    const nav = sidebarRoot();
+    if (!nav) return null;
+    const candidates = Array.from(nav.querySelectorAll(SIDEBAR_PAYMENT_SELECTOR));
+    for (const candidate of candidates) {
+      if (!isSidebarLink(candidate)) continue;
+      if (candidate.closest("[data-zteapi-payment-hidden],[aria-hidden='true']")) continue;
+      const role = paymentNavigationRole(candidate);
+      if (role) continue;
+      const text = compactText(candidate);
+      if (!text || text.length > 32) continue;
+      return candidate;
+    }
+    return null;
+  }
+
   function createUserPaymentLink(reference, role) {
-    const referenceContainer = sidebarItemContainer(reference);
-    const refAnchor = reference && reference.matches && reference.matches("a[href]") ? reference : reference && reference.querySelector && reference.querySelector("a[href]");
+    const visualReference = neutralSidebarReference() || reference;
+    const referenceContainer = sidebarItemContainer(visualReference || reference);
+    const refAnchor = visualReference && visualReference.matches && visualReference.matches("a[href]") ? visualReference : visualReference && visualReference.querySelector && visualReference.querySelector("a[href]");
     const link = (refAnchor || reference || document.createElement("a")).cloneNode(true);
     cleanClonedPaymentNode(link);
-    if (reference) {
-      link.className = (refAnchor && refAnchor.className) || reference.className || "sidebar-link";
-      const refRole = (refAnchor && refAnchor.getAttribute("role")) || reference.getAttribute("role");
+    if (visualReference || reference) {
+      link.className = (refAnchor && refAnchor.className) || (visualReference && visualReference.className) || (reference && reference.className) || "sidebar-link";
+      const refRole = (refAnchor && refAnchor.getAttribute("role")) || (visualReference && visualReference.getAttribute("role")) || (reference && reference.getAttribute("role"));
       if (refRole) link.setAttribute("role", refRole);
     } else {
       link.className = "sidebar-link";
@@ -248,6 +333,8 @@
       setPaymentMainLabel(link);
       forceQrpaySubpageNavigation(link, "recharge");
     }
+    setUserPaymentIcon(link, role);
+    scrubPaymentVisualState(link);
     link.dataset.zteapiCanonicalPaymentLink = role;
     link.style.display = "";
     link.removeAttribute("aria-hidden");
@@ -260,6 +347,7 @@
     ) {
       const wrapper = referenceContainer.cloneNode(false);
       cleanClonedPaymentNode(wrapper);
+      scrubPaymentVisualState(wrapper);
       wrapper.dataset.zteapiCanonicalPaymentItem = role;
       wrapper.style.display = "";
       wrapper.removeAttribute("aria-hidden");
@@ -324,6 +412,22 @@
     return canonical.dataset.zteapiCanonicalPaymentLink || canonical.dataset.zteapiCanonicalPaymentItem || "";
   }
 
+  function paymentNavigationRole(node) {
+    if (!node) return "";
+    const managed = closestPaymentManagedNode(node);
+    if (managed && managed.dataset) {
+      const managedRole =
+        managed.dataset.zteapiCanonicalPaymentLink ||
+        managed.dataset.zteapiCanonicalPaymentItem ||
+        managed.dataset.zteapiQrpayNavigation ||
+        "";
+      if (managedRole) return managedRole;
+    }
+    if (node.dataset && node.dataset.zteapiQrpayNavigation) return node.dataset.zteapiQrpayNavigation;
+    const path = elementPath(node);
+    return paymentLinkRole(path, compactText(node));
+  }
+
   function qrpayTargetForRole(role) {
     if (role === "plans") return "/subscriptions";
     if (role === "orders") return "/orders";
@@ -357,7 +461,13 @@
 
   function isNativeSub2ApiPaymentView() {
     if (!document.body || isQrpayPaymentDocument()) return false;
-    const text = compactText(document.body);
+    if (qrpaySubpageContainer()) return false;
+    const main =
+      document.querySelector('main:not(.shell)') ||
+      document.querySelector('[role="main"]:not(.shell)') ||
+      document.querySelector("main") ||
+      document.querySelector('[role="main"]');
+    const text = compactText(main || document.body);
     return textHasAny(text, [
       "\u5145\u503c\u529f\u80fd\u6682\u672a\u5f00\u653e",
       "Balanceiscreditedautomaticallyafterverifiedpayment",
@@ -397,18 +507,10 @@
       (banner.querySelector("p") || banner.querySelector(".text-muted, [class*='subtitle'], [class*='description']"));
     if (subtitle) subtitle.textContent = "通过微信收款码完成充值与订阅。";
 
-    collectSidebarPaymentLinks().forEach(({ link, role }) => {
-      if (role === "orders") {
-        link.dataset.zteapiOrdersLink = "1";
-      } else {
-        link.dataset.zteapiPurchaseLink = "1";
-      }
-      if ((activeRole === "orders" && role === "orders") || (activeRole !== "orders" && role !== "orders")) {
-        link.setAttribute("aria-current", "page");
-      } else {
-        link.removeAttribute("aria-current");
-      }
-    });
+    const recharge = canonicalPaymentLink("recharge");
+    const orders = canonicalPaymentLink("orders");
+    if (recharge) revealSidebarPaymentNode(recharge, activeRole !== "orders");
+    if (orders) revealSidebarPaymentNode(orders, activeRole === "orders");
   }
 
   function updateQrpayHistory(role, push) {
@@ -456,6 +558,7 @@
 
   function looksLikePaymentControl(node) {
     if (!node || !node.matches) return false;
+    if (paymentNavigationRole(node)) return true;
     const path = elementPath(node);
     const text = compactText(node);
     if (paymentLinkRole(path, text)) return true;
@@ -470,7 +573,7 @@
     if ((!QRPAY_PAGE_PATHS.includes(path) && !nativePaymentView) || /^\/admin(?:\/|$)/.test(path)) return false;
     if (isQrpayPaymentDocument()) return false;
 
-    const role = nativePaymentView ? "recharge" : qrpayRoleForPath(path);
+    const role = QRPAY_PAGE_PATHS.includes(path) ? qrpayRoleForPath(path) : nativePaymentView ? "recharge" : qrpayRoleForPath(path);
     if (path !== qrpayTargetForRole(role)) updateQrpayHistory(role, false);
     return mountQrpaySubpage(role);
   }
@@ -490,7 +593,7 @@
       if (!item || seen.has(item)) return;
       const path = elementPath(item) || elementPath(node);
       const text = compactText(item);
-      const role = canonicalRoleForNode(item) || paymentLinkRole(path, text);
+      const role = paymentNavigationRole(item) || canonicalRoleForNode(item) || paymentLinkRole(path, text);
       if (!role) return;
       seen.add(item);
       items.push({ link: item, path, role, index });
@@ -561,10 +664,14 @@
     if (recharge) {
       forceQrpaySubpageNavigation(recharge, "recharge");
       setPaymentMainLabel(recharge);
+      setUserPaymentIcon(recharge, "recharge");
+      scrubPaymentVisualState(recharge);
     }
     if (orders) {
       forceQrpaySubpageNavigation(orders, "orders");
       setOrdersMainLabel(orders);
+      setUserPaymentIcon(orders, "orders");
+      scrubPaymentVisualState(orders);
     }
     return { recharge, orders };
   }
@@ -602,31 +709,59 @@
     });
   }
 
-  function handlePaymentNavigationClick(event) {
+  let lastQrpayPointerNavigationAt = 0;
+
+  function findPaymentNavigationCandidate(event) {
     if (/^\/admin(?:\/|$)/.test(window.location.pathname || "/")) return;
     if (isQrpayPaymentDocument()) return;
 
     let node = event.target && event.target.nodeType === 1 ? event.target : event.target && event.target.parentElement;
     let sidebarCandidate = null;
+    let explicitRole = "";
     while (node && node !== document.body && node !== document.documentElement) {
+      const managed = closestPaymentManagedNode(node);
+      if (managed && isSidebarLink(managed)) {
+        sidebarCandidate = managed;
+        explicitRole = paymentNavigationRole(managed);
+        break;
+      }
       const navigable = node.matches && node.matches("a[href],button,[role='button'],[role='link'],[data-href],[data-to],[data-path],[class*='sidebar-link'],[class*='sidebar-item'],[class*='menu-item'],[class*='nav-item'],li");
       if (navigable && looksLikePaymentControl(node)) {
         sidebarCandidate = node;
+        explicitRole = paymentNavigationRole(node);
         break;
       }
       if (node.matches && node.matches("aside,nav,.sidebar,.sidebar-nav,.layout-sidebar")) break;
       node = node.parentElement;
     }
 
-    if (!sidebarCandidate) return;
+    if (!sidebarCandidate) return null;
     const path = elementPath(sidebarCandidate);
-    const role = paymentLinkRole(path, compactText(sidebarCandidate)) || "recharge";
-    if (isSidebarLink(sidebarCandidate) || QRPAY_PAGE_PATHS.includes(path) || role) {
-      event.preventDefault();
-      event.stopImmediatePropagation();
-      if (typeof event.stopPropagation === "function") event.stopPropagation();
-      openQrpaySubpage(role, true);
-    }
+    const role = explicitRole || paymentNavigationRole(sidebarCandidate) || paymentLinkRole(path, compactText(sidebarCandidate)) || "recharge";
+    if (!isSidebarLink(sidebarCandidate) && !QRPAY_PAGE_PATHS.includes(path) && !role) return null;
+    return { role, path, node: sidebarCandidate };
+  }
+
+  function suppressPaymentNavigationEvent(event) {
+    event.preventDefault();
+    event.stopImmediatePropagation();
+    if (typeof event.stopPropagation === "function") event.stopPropagation();
+  }
+
+  function handlePaymentNavigationPointerDown(event) {
+    const candidate = findPaymentNavigationCandidate(event);
+    if (!candidate) return;
+    suppressPaymentNavigationEvent(event);
+    lastQrpayPointerNavigationAt = Date.now();
+    openQrpaySubpage(candidate.role, true);
+  }
+
+  function handlePaymentNavigationClick(event) {
+    const candidate = findPaymentNavigationCandidate(event);
+    if (!candidate) return;
+    suppressPaymentNavigationEvent(event);
+    if (Date.now() - lastQrpayPointerNavigationAt < 600) return;
+    openQrpaySubpage(candidate.role, true);
   }
 
   function createAdminQrpayLink(reference) {
@@ -735,7 +870,7 @@
 
   wrapHistory("pushState");
   wrapHistory("replaceState");
-  document.addEventListener("pointerdown", handlePaymentNavigationClick, true);
+  document.addEventListener("pointerdown", handlePaymentNavigationPointerDown, true);
   document.addEventListener("click", handlePaymentNavigationClick, true);
   window.addEventListener("popstate", refresh);
   window.addEventListener("pageshow", scheduleRefresh);

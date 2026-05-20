@@ -72,6 +72,9 @@ async function runScenario(name, html) {
     clickByText(window, "我的订单");
     await flush(window, 180);
     assertPaymentState(window, "/qrpay/orders?embed=1", `${name} orders ${i}`);
+    clickByText(window, "我的订单");
+    await flush(window, 180);
+    assertPaymentState(window, "/qrpay/orders?embed=1", `${name} repeated orders ${i}`);
     clickByText(window, "充值/订阅");
     await flush(window, 180);
     assertPaymentState(window, "/qrpay/purchase?embed=1", `${name} recharge ${i}`);

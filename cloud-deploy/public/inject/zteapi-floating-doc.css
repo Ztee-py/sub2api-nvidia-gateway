@@ -100,16 +100,6 @@
   background: #f7fafb;
 }
 
-html[data-zteapi-active-page="purchase"] [data-zteapi-purchase-link="1"] {
-  color: #0f766e;
-  background: #ecfdf5;
-}
-
-html[data-zteapi-active-page="orders"] [data-zteapi-orders-link="1"] {
-  color: #0f766e;
-  background: #ecfdf5;
-}
-
 @media (max-width: 720px) {
   .zteapi-floating-actions {
     right: 18px;
