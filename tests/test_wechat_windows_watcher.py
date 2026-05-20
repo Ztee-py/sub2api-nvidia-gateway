@@ -12,6 +12,7 @@ from wechat_windows_watcher import (  # noqa: E402
     TextEvent,
     DEFAULT_WECHAT_DECRYPT_DB_GLOB,
     WeChatDecryptDbSource,
+    bridge_headers,
     decode_wechat_content,
     iso_from_timestamp_candidate,
     parse_iso_datetime,
@@ -230,6 +231,24 @@ class WeChatWindowsWatcherTest(unittest.TestCase):
 
         self.assertTrue(state["active"])
         self.assertEqual(state["pending_count"], 1)
+
+    def test_bridge_headers_are_cloudflare_compatible(self):
+        headers = bridge_headers("secret-token")
+
+        self.assertIn("Mozilla/5.0", headers["User-Agent"])
+        self.assertEqual(headers["Accept"], "application/json")
+        self.assertEqual(headers["Accept-Language"], "zh-CN,zh;q=0.9,en;q=0.8")
+        self.assertEqual(headers["Cache-Control"], "no-store")
+        self.assertEqual(headers["X-Qrpay-Secret"], "secret-token")
+        self.assertNotIn("Content-Type", headers)
+
+    def test_bridge_post_headers_keep_json_content_type(self):
+        headers = bridge_headers("secret-token", accept_json=False)
+
+        self.assertIn("Mozilla/5.0", headers["User-Agent"])
+        self.assertEqual(headers["Accept"], "application/json")
+        self.assertEqual(headers["Content-Type"], "application/json")
+        self.assertEqual(headers["X-Qrpay-Secret"], "secret-token")
 
     def test_iso_from_timestamp_candidate_accepts_windows_filetime(self):
         parsed = iso_from_timestamp_candidate(133485408000000000)

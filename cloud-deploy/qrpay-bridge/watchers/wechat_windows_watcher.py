@@ -47,6 +47,11 @@ PAYER_PATTERNS = [
 TRANSFER_RECEIVED_SUBTYPES = {"3", "8"}
 DEFAULT_WECHAT_DECRYPT_DB_GLOB = "message_*.db,biz_message_*.db"
 _ZSTD_DCTX = zstd.ZstdDecompressor() if zstd is not None else None
+WATCHER_HTTP_USER_AGENT = (
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+    "AppleWebKit/537.36 (KHTML, like Gecko) "
+    "Chrome/124.0 Safari/537.36 ZteAPI-QRPay-Watcher/1.0"
+)
 
 
 @dataclass(frozen=True)
@@ -719,11 +724,26 @@ def bridge_post(args: argparse.Namespace, path: str, payload: dict) -> dict:
     req = urllib.request.Request(
         args.bridge_url.rstrip("/") + path,
         data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
-        headers={"Content-Type": "application/json", "X-Qrpay-Secret": args.watcher_secret},
+        headers=bridge_headers(args.watcher_secret, accept_json=False),
         method="POST",
     )
     raw = urllib.request.urlopen(req, timeout=args.timeout).read().decode("utf-8")
     return json.loads(raw)
+
+
+def bridge_headers(watcher_secret: str, *, accept_json: bool = True) -> dict[str, str]:
+    headers = {
+        "User-Agent": WATCHER_HTTP_USER_AGENT,
+        "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
+        "Cache-Control": "no-store",
+        "X-Qrpay-Secret": watcher_secret,
+    }
+    if accept_json:
+        headers["Accept"] = "application/json"
+    else:
+        headers["Accept"] = "application/json"
+        headers["Content-Type"] = "application/json"
+    return headers
 
 
 def bridge_get(args: argparse.Namespace, path: str) -> dict:
@@ -731,7 +751,7 @@ def bridge_get(args: argparse.Namespace, path: str) -> dict:
         raise RuntimeError("QRPAY_BRIDGE_URL and QRPAY_WATCHER_SECRET are required for bridge requests")
     req = urllib.request.Request(
         args.bridge_url.rstrip("/") + path,
-        headers={"Accept": "application/json", "X-Qrpay-Secret": args.watcher_secret},
+        headers=bridge_headers(args.watcher_secret),
         method="GET",
     )
     raw = urllib.request.urlopen(req, timeout=args.timeout).read().decode("utf-8")
