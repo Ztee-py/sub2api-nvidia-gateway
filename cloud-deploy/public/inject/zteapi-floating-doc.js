@@ -128,16 +128,31 @@
     return Boolean(link.closest("aside,nav,.sidebar,.sidebar-nav,.layout-sidebar,[class*='sidebar']"));
   }
 
-  function insertAfter(reference, node) {
-    const container =
-      reference &&
-      (reference.closest("li,[class*='sidebar-item'],[class*='menu-item'],[class*='nav-item']") || reference);
+  const SIDEBAR_ITEM_SELECTOR = "li,[class*='sidebar-item'],[class*='menu-item'],[class*='nav-item']";
+
+  function sidebarRoot() {
+    return document.querySelector(".sidebar-nav") || document.querySelector("aside nav") || document.querySelector("nav") || document.querySelector("aside");
+  }
+
+  function sidebarItemContainer(node) {
+    if (!node || !node.closest) return node;
+    const item = node.closest(SIDEBAR_ITEM_SELECTOR);
+    if (item && isSidebarLink(item)) return item;
+    return node;
+  }
+
+  function insertBeforeReference(reference, node) {
+    const container = sidebarItemContainer(reference);
     if (container && container.parentElement) {
-      container.parentElement.insertBefore(node, container.nextSibling);
-      return;
+      container.parentElement.insertBefore(node, container);
+      return true;
     }
-    const nav = document.querySelector(".sidebar-nav") || document.querySelector("aside nav") || document.querySelector("nav") || document.querySelector("aside");
-    if (nav) nav.appendChild(node);
+    const nav = sidebarRoot();
+    if (nav) {
+      nav.appendChild(node);
+      return true;
+    }
+    return false;
   }
 
   const MAIN_PAYMENT_LABEL = "\u5145\u503c/\u8ba2\u9605";
@@ -151,47 +166,74 @@
     "[data-href]",
     "[data-to]",
     "[data-path]",
-    "li",
-    "[class*='sidebar-link']",
-    "[class*='sidebar-item']",
-    "[class*='menu-item']",
-    "[class*='nav-item']"
   ].join(",");
 
+  function paymentLabelNode(link) {
+    if (!link || !link.querySelector) return link;
+    const preferred = link.querySelector(".sidebar-label,[class*='label'],[class*='title'],[class*='text']");
+    if (preferred) return preferred;
+    const spans = Array.from(link.querySelectorAll("span"));
+    const textSpan = spans.find((span) => compactText(span) && !span.querySelector("svg"));
+    if (textSpan) return textSpan;
+    const label = document.createElement("span");
+    label.className = "sidebar-label";
+    link.appendChild(label);
+    return label;
+  }
+
   function setPaymentMainLabel(link) {
-    const label =
-      link.querySelector(".sidebar-label") ||
-      link.querySelector("span") ||
-      link;
+    const label = paymentLabelNode(link);
     if (label && compactText(label) !== MAIN_PAYMENT_LABEL) {
       label.textContent = MAIN_PAYMENT_LABEL;
     }
     link.dataset.zteapiPurchaseLink = "1";
+    delete link.dataset.zteapiOrdersLink;
   }
 
   function setOrdersMainLabel(link) {
-    const label =
-      link.querySelector(".sidebar-label") ||
-      link.querySelector("span") ||
-      link;
+    const label = paymentLabelNode(link);
     if (label && compactText(label) !== ORDER_PAYMENT_LABEL) {
       label.textContent = ORDER_PAYMENT_LABEL;
     }
     link.dataset.zteapiOrdersLink = "1";
+    delete link.dataset.zteapiPurchaseLink;
+  }
+
+  function cleanClonedPaymentNode(node) {
+    if (!node || !node.querySelectorAll) return;
+    node.removeAttribute("id");
+    node.removeAttribute("aria-current");
+    node.style.display = "";
+    node.removeAttribute("aria-hidden");
+    node.removeAttribute("tabindex");
+    if (node.dataset) {
+      delete node.dataset.zteapiPaymentHidden;
+      delete node.dataset.zteapiPurchaseLink;
+      delete node.dataset.zteapiOrdersLink;
+      delete node.dataset.zteapiQrpayNavigationBound;
+      delete node.dataset.zteapiQrpayNavigation;
+      delete node.dataset.zteapiSynthPaymentLink;
+      delete node.dataset.zteapiCanonicalPaymentItem;
+      delete node.dataset.zteapiCanonicalPaymentLink;
+    }
+    node.querySelectorAll("[id]").forEach((child) => child.removeAttribute("id"));
+    node.querySelectorAll("[data-zteapi-payment-hidden],[data-zteapi-purchase-link],[data-zteapi-orders-link],[data-zteapi-qrpay-navigation-bound],[data-zteapi-qrpay-navigation],[data-zteapi-synth-payment-link],[data-zteapi-canonical-payment-item],[data-zteapi-canonical-payment-link]").forEach((child) => {
+      delete child.dataset.zteapiPaymentHidden;
+      delete child.dataset.zteapiPurchaseLink;
+      delete child.dataset.zteapiOrdersLink;
+      delete child.dataset.zteapiQrpayNavigationBound;
+      delete child.dataset.zteapiQrpayNavigation;
+      delete child.dataset.zteapiSynthPaymentLink;
+      delete child.dataset.zteapiCanonicalPaymentItem;
+      delete child.dataset.zteapiCanonicalPaymentLink;
+    });
   }
 
   function createUserPaymentLink(reference, role) {
-    const referenceContainer =
-      reference &&
-      (reference.closest("li,[class*='sidebar-item'],[class*='menu-item'],[class*='nav-item']") || reference);
+    const referenceContainer = sidebarItemContainer(reference);
     const refAnchor = reference && reference.matches && reference.matches("a[href]") ? reference : reference && reference.querySelector && reference.querySelector("a[href]");
     const link = (refAnchor || reference || document.createElement("a")).cloneNode(true);
-    if (link.dataset) {
-      delete link.dataset.zteapiPaymentHidden;
-      delete link.dataset.zteapiPurchaseLink;
-      delete link.dataset.zteapiOrdersLink;
-      delete link.dataset.zteapiQrpayNavigationBound;
-    }
+    cleanClonedPaymentNode(link);
     if (reference) {
       link.className = (refAnchor && refAnchor.className) || reference.className || "sidebar-link";
       const refRole = (refAnchor && refAnchor.getAttribute("role")) || reference.getAttribute("role");
@@ -199,7 +241,6 @@
     } else {
       link.className = "sidebar-link";
     }
-    link.removeAttribute("id");
     if (role === "orders") {
       setOrdersMainLabel(link);
       forceQrpaySubpageNavigation(link, "orders");
@@ -207,7 +248,7 @@
       setPaymentMainLabel(link);
       forceQrpaySubpageNavigation(link, "recharge");
     }
-    link.dataset.zteapiSynthPaymentLink = role;
+    link.dataset.zteapiCanonicalPaymentLink = role;
     link.style.display = "";
     link.removeAttribute("aria-hidden");
     link.removeAttribute("tabindex");
@@ -215,12 +256,11 @@
       referenceContainer &&
       referenceContainer !== reference &&
       referenceContainer.matches &&
-      referenceContainer.matches("li,[class*='sidebar-item'],[class*='menu-item'],[class*='nav-item']")
+      referenceContainer.matches(SIDEBAR_ITEM_SELECTOR)
     ) {
       const wrapper = referenceContainer.cloneNode(false);
-      wrapper.dataset.zteapiSynthPaymentLink = role;
-      delete link.dataset.zteapiSynthPaymentLink;
-      wrapper.removeAttribute("id");
+      cleanClonedPaymentNode(wrapper);
+      wrapper.dataset.zteapiCanonicalPaymentItem = role;
       wrapper.style.display = "";
       wrapper.removeAttribute("aria-hidden");
       wrapper.removeAttribute("tabindex");
@@ -264,6 +304,24 @@
     } else if (role === "orders") {
       forceQrpaySubpageNavigation(link, "orders");
     }
+  }
+
+  function canonicalPaymentLink(role) {
+    const selector = role === "orders" ? '[data-zteapi-canonical-payment-link="orders"]' : '[data-zteapi-canonical-payment-link="recharge"]';
+    return document.querySelector(selector);
+  }
+
+  function canonicalPaymentNode(link) {
+    if (!link) return null;
+    return link.closest('[data-zteapi-canonical-payment-item]') || link;
+  }
+
+  function canonicalRoleForNode(node) {
+    if (!node) return "";
+    if (node.dataset && node.dataset.zteapiCanonicalPaymentLink) return node.dataset.zteapiCanonicalPaymentLink;
+    const canonical = node.closest && node.closest("[data-zteapi-canonical-payment-link],[data-zteapi-canonical-payment-item]");
+    if (!canonical || !canonical.dataset) return "";
+    return canonical.dataset.zteapiCanonicalPaymentLink || canonical.dataset.zteapiCanonicalPaymentItem || "";
   }
 
   function qrpayTargetForRole(role) {
@@ -418,13 +476,9 @@
   }
 
   function sidebarPaymentPatchTarget(node) {
-    const synthetic = node.closest('[data-zteapi-synth-payment-link]');
-    if (synthetic) return synthetic;
-    return (
-      node.closest("a[href],button,[role='button'],[role='link'],[data-href],[data-to],[data-path]") ||
-      node.closest("[class*='sidebar-link'],[class*='sidebar-item'],[class*='menu-item'],[class*='nav-item'],li") ||
-      node
-    );
+    const canonical = node.closest("[data-zteapi-canonical-payment-link],[data-zteapi-canonical-payment-item]");
+    if (canonical) return canonical;
+    return node.closest("a[href],button,[role='button'],[role='link'],[data-href],[data-to],[data-path]") || node;
   }
 
   function collectSidebarPaymentLinks() {
@@ -436,18 +490,83 @@
       if (!item || seen.has(item)) return;
       const path = elementPath(item) || elementPath(node);
       const text = compactText(item);
-      const role = paymentLinkRole(path, text);
+      const role = canonicalRoleForNode(item) || paymentLinkRole(path, text);
       if (!role) return;
       seen.add(item);
-      if (item.dataset.zteapiPaymentHidden === "1") {
-        item.style.display = "";
-        item.removeAttribute("aria-hidden");
-        item.removeAttribute("tabindex");
-        delete item.dataset.zteapiPaymentHidden;
-      }
       items.push({ link: item, path, role, index });
     });
     return items;
+  }
+
+  function hideSidebarPaymentNode(node) {
+    if (!node) return;
+    const target = canonicalPaymentNode(node) || sidebarItemContainer(node) || node;
+    target.style.display = "none";
+    target.setAttribute("aria-hidden", "true");
+    target.setAttribute("tabindex", "-1");
+    target.removeAttribute("aria-current");
+    target.dataset.zteapiPaymentHidden = "1";
+    if (node !== target && node.dataset) {
+      node.dataset.zteapiPaymentHidden = "1";
+      node.removeAttribute("aria-current");
+    }
+  }
+
+  function revealSidebarPaymentNode(node, active) {
+    if (!node) return;
+    const target = canonicalPaymentNode(node) || node;
+    target.style.display = "";
+    target.removeAttribute("aria-hidden");
+    target.removeAttribute("tabindex");
+    delete target.dataset.zteapiPaymentHidden;
+    node.style.display = "";
+    node.removeAttribute("aria-hidden");
+    node.removeAttribute("tabindex");
+    delete node.dataset.zteapiPaymentHidden;
+    if (active) {
+      node.setAttribute("aria-current", "page");
+      target.setAttribute("aria-current", "page");
+    } else {
+      node.removeAttribute("aria-current");
+      target.removeAttribute("aria-current");
+    }
+  }
+
+  function ensureCanonicalPaymentLinks(sidebarLinks) {
+    let recharge = canonicalPaymentLink("recharge");
+    let orders = canonicalPaymentLink("orders");
+    const referenceItem =
+      sidebarLinks.find((item) => item.role === "recharge") ||
+      sidebarLinks.find((item) => item.role === "plans") ||
+      sidebarLinks.find((item) => item.role === "orders") ||
+      sidebarLinks[0];
+    const reference = referenceItem && referenceItem.link;
+
+    if (!recharge) {
+      const node = createUserPaymentLink(reference, "recharge");
+      insertBeforeReference(reference, node);
+      recharge = canonicalPaymentLink("recharge") || (node.matches && node.matches("[data-zteapi-canonical-payment-link]") ? node : node.querySelector && node.querySelector("[data-zteapi-canonical-payment-link]"));
+    }
+    if (!orders) {
+      const node = createUserPaymentLink(recharge || reference, "orders");
+      const rechargeNode = canonicalPaymentNode(recharge) || sidebarItemContainer(recharge) || reference;
+      if (rechargeNode && rechargeNode.parentElement) {
+        rechargeNode.parentElement.insertBefore(node, rechargeNode.nextSibling);
+      } else {
+        insertBeforeReference(reference, node);
+      }
+      orders = canonicalPaymentLink("orders") || (node.matches && node.matches("[data-zteapi-canonical-payment-link]") ? node : node.querySelector && node.querySelector("[data-zteapi-canonical-payment-link]"));
+    }
+
+    if (recharge) {
+      forceQrpaySubpageNavigation(recharge, "recharge");
+      setPaymentMainLabel(recharge);
+    }
+    if (orders) {
+      forceQrpaySubpageNavigation(orders, "orders");
+      setOrdersMainLabel(orders);
+    }
+    return { recharge, orders };
   }
 
   function patchUserPaymentLinks() {
@@ -467,56 +586,19 @@
       patchNonSidebarPaymentLink(link, role, path);
     });
 
-    if (!sidebarLinks.length) return;
+    if (!sidebarLinks.length && !sidebarRoot()) return;
 
-    const rechargeLinks = sidebarLinks.filter((item) => item.role === "recharge");
-    const orderLinks = sidebarLinks.filter((item) => item.role === "orders");
-    const planLinks = sidebarLinks.filter((item) => item.role === "plans");
-    rechargeLinks.sort((a, b) => sidebarPaymentScore(a) - sidebarPaymentScore(b) || a.index - b.index);
-    orderLinks.sort((a, b) => sidebarPaymentScore(a) - sidebarPaymentScore(b) || a.index - b.index);
-
-    const main = rechargeLinks[0] || planLinks[0] || sidebarLinks[0];
-    let orders = orderLinks[0] || null;
-    const keep = new Set();
-
-    if (main) {
-      forceQrpaySubpageNavigation(main.link, "recharge");
-      setPaymentMainLabel(main.link);
-      main.link.style.display = "";
-      main.link.removeAttribute("aria-hidden");
-      main.link.removeAttribute("tabindex");
-      delete main.link.dataset.zteapiPaymentHidden;
-      keep.add(main.link);
-    }
-
-    if (!orders && main) {
-      const synthetic = createUserPaymentLink(main.link, "orders");
-      insertAfter(main.link, synthetic);
-      orders = {
-        link: synthetic,
-        path: "/orders",
-        role: "orders",
-        index: Number.MAX_SAFE_INTEGER,
-      };
-    }
-
-    if (orders && orders.link !== (main && main.link)) {
-      forceQrpaySubpageNavigation(orders.link, "orders");
-      setOrdersMainLabel(orders.link);
-      orders.link.style.display = "";
-      orders.link.removeAttribute("aria-hidden");
-      orders.link.removeAttribute("tabindex");
-      delete orders.link.dataset.zteapiPaymentHidden;
-      keep.add(orders.link);
-    }
+    const canonical = ensureCanonicalPaymentLinks(sidebarLinks);
+    const keep = new Set([canonical.recharge, canonical.orders].filter(Boolean));
+    const activePage = document.documentElement.dataset.zteapiActivePage;
+    revealSidebarPaymentNode(canonical.recharge, activePage !== "orders");
+    revealSidebarPaymentNode(canonical.orders, activePage === "orders");
 
     sidebarLinks.forEach(({ link }) => {
       if (keep.has(link)) return;
-      link.style.display = "none";
-      link.setAttribute("aria-hidden", "true");
-      link.setAttribute("tabindex", "-1");
-      link.removeAttribute("aria-current");
-      link.dataset.zteapiPaymentHidden = "1";
+      if (canonicalPaymentLink("recharge") && canonicalPaymentNode(link) === canonicalPaymentNode(canonicalPaymentLink("recharge"))) return;
+      if (canonicalPaymentLink("orders") && canonicalPaymentNode(link) === canonicalPaymentNode(canonicalPaymentLink("orders"))) return;
+      hideSidebarPaymentNode(link);
     });
   }
 
