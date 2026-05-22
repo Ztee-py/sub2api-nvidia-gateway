@@ -231,6 +231,39 @@ import json
 import sys
 import urllib.request
 
+def parse_sse_payloads(raw):
+    events = []
+    data_lines = []
+    for line in raw.splitlines():
+        if line.startswith("data:"):
+            data_lines.append(line[5:].lstrip())
+        elif line == "" and data_lines:
+            data = "\n".join(data_lines)
+            data_lines = []
+            if data == "[DONE]":
+                continue
+            try:
+                events.append(json.loads(data))
+            except json.JSONDecodeError:
+                pass
+    if data_lines:
+        data = "\n".join(data_lines)
+        if data != "[DONE]":
+            try:
+                events.append(json.loads(data))
+            except json.JSONDecodeError:
+                pass
+    return events
+
+def walk_json(value):
+    if isinstance(value, dict):
+        yield value
+        for child in value.values():
+            yield from walk_json(child)
+    elif isinstance(value, list):
+        for child in value:
+            yield from walk_json(child)
+
 base_url, key, model = sys.argv[1:4]
 payload = {
     "model": model,
@@ -255,26 +288,45 @@ with urllib.request.urlopen(req, timeout=900) as resp:
     content_type = resp.headers.get("Content-Type", "")
     raw = resp.read().decode("utf-8", errors="replace")
 
-payload = json.loads(raw)
-outputs = payload.get("output") or []
-image_calls = [item for item in outputs if item.get("type") == "image_generation_call"]
-image_base64 = [item.get("result") for item in image_calls if item.get("result")]
+if "text/event-stream" in content_type.lower():
+    payloads = parse_sse_payloads(raw)
+    json_nodes = [node for payload in payloads for node in walk_json(payload)]
+    output_types = [node.get("type") for node in json_nodes if isinstance(node.get("type"), str)]
+    image_base64 = [
+        node.get("result")
+        for node in json_nodes
+        if node.get("type") == "image_generation_call" and node.get("result")
+    ]
+    response_id = next((node.get("id") for node in json_nodes if str(node.get("id", "")).startswith("resp_")), None)
+    usage = next((node.get("usage") for node in reversed(json_nodes) if isinstance(node.get("usage"), dict)), {})
+else:
+    payload = json.loads(raw)
+    outputs = payload.get("output") or []
+    output_types = [item.get("type") for item in outputs if isinstance(item, dict)]
+    image_base64 = [
+        item.get("result")
+        for item in outputs
+        if isinstance(item, dict) and item.get("type") == "image_generation_call" and item.get("result")
+    ]
+    response_id = payload.get("id")
+    usage = payload.get("usage", {})
+
 decoded_bytes = 0
 if image_base64:
     decoded_bytes = len(base64.b64decode(image_base64[0], validate=True))
 
 summary = {
     "content_type": content_type,
-    "response_id": payload.get("id"),
-    "output_types": [item.get("type") for item in outputs],
-    "image_calls": len(image_calls),
+    "response_id": response_id,
+    "output_types": output_types,
+    "image_calls": len(image_base64),
     "decoded_image_bytes": decoded_bytes,
-    "usage": payload.get("usage", {}),
+    "usage": usage,
 }
 print(json.dumps(summary, ensure_ascii=False, indent=2))
 
-if "json" not in content_type.lower():
-    raise SystemExit(f"Expected JSON response, got {content_type!r}.")
+if "json" not in content_type.lower() and "text/event-stream" not in content_type.lower():
+    raise SystemExit(f"Expected JSON or event-stream response, got {content_type!r}.")
 if not image_base64:
     raise SystemExit("No image_generation_call.result found in Responses output.")
 if decoded_bytes < 1024:
