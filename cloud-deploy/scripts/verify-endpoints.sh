@@ -15,19 +15,25 @@ set +a
 BASE_URL="${BASE_URL:-https://${PUBLIC_DOMAIN}}"
 NVIDIA_TEST_MODEL="${NVIDIA_TEST_MODEL:-qwen3-next-80b}"
 GPT_TEST_MODEL="${GPT_TEST_MODEL:-gpt-5.4}"
-GPT_IMAGE_TEST_MODEL="${GPT_IMAGE_TEST_MODEL:-${GPT_TEST_MODEL}}"
+GPT_IMAGE_TEST_MODEL="${GPT_IMAGE_TEST_MODEL:-gpt-image-2}"
 NVIDIA_TEST_KEY="${NVIDIA_TEST_KEY:-}"
 GPT_TEST_KEY="${GPT_TEST_KEY:-}"
+GPT_IMAGE_TEST_KEY="${GPT_IMAGE_TEST_KEY:-${GPT_TEST_KEY}}"
 VERIFY_USAGE_LOGS="${VERIFY_USAGE_LOGS:-true}"
 VERIFY_CODEX_MODEL_GUARD="${VERIFY_CODEX_MODEL_GUARD:-true}"
-VERIFY_GPT_IMAGE_GENERATION="${VERIFY_GPT_IMAGE_GENERATION:-true}"
+VERIFY_IMAGE_GENERATION="${VERIFY_IMAGE_GENERATION:-false}"
 
 if [[ -z "${PUBLIC_DOMAIN:-}" && -z "${BASE_URL:-}" ]]; then
   echo "PUBLIC_DOMAIN or BASE_URL is required." >&2
   exit 1
 fi
 
-if [[ -z "${NVIDIA_TEST_KEY}" && -z "${GPT_TEST_KEY}" ]]; then
+if [[ "${VERIFY_IMAGE_GENERATION}" == "true" && -z "${GPT_IMAGE_TEST_KEY}" ]]; then
+  echo "GPT_IMAGE_TEST_KEY or GPT_TEST_KEY is required when VERIFY_IMAGE_GENERATION=true." >&2
+  exit 1
+fi
+
+if [[ -z "${NVIDIA_TEST_KEY}" && -z "${GPT_TEST_KEY}" && "${VERIFY_IMAGE_GENERATION}" != "true" ]]; then
   cat >&2 <<'EOF'
 At least one test key is required.
 
@@ -35,6 +41,7 @@ Examples:
   NVIDIA_TEST_KEY=sk-... ./scripts/verify-endpoints.sh
   GPT_TEST_KEY=sk-... ./scripts/verify-endpoints.sh
   NVIDIA_TEST_KEY=sk-... GPT_TEST_KEY=sk-... ./scripts/verify-endpoints.sh
+  GPT_IMAGE_TEST_KEY=sk-... VERIFY_IMAGE_GENERATION=true ./scripts/verify-endpoints.sh
 EOF
   exit 1
 fi
@@ -219,119 +226,88 @@ SQL
   fi
 }
 
-run_responses_image_generation_test() {
+run_image_generation_test() {
   local label="$1"
   local key="$2"
   local model="$3"
+  local before_image=0
 
-  echo "== ${label} Responses image generation =="
+  echo "== ${label} image generation =="
+  if [[ "${VERIFY_USAGE_LOGS}" == "true" ]]; then
+    before_image="$(docker compose exec -T postgres psql -U "${POSTGRES_USER:-sub2api}" "${POSTGRES_DB:-sub2api}" -At -c "select coalesce(max(id),0) from usage_logs;")"
+  fi
+
   python3 - "${BASE_URL}" "${key}" "${model}" <<'PY'
 import base64
 import json
 import sys
+import tempfile
 import urllib.request
-
-def parse_sse_payloads(raw):
-    events = []
-    data_lines = []
-    for line in raw.splitlines():
-        if line.startswith("data:"):
-            data_lines.append(line[5:].lstrip())
-        elif line == "" and data_lines:
-            data = "\n".join(data_lines)
-            data_lines = []
-            if data == "[DONE]":
-                continue
-            try:
-                events.append(json.loads(data))
-            except json.JSONDecodeError:
-                pass
-    if data_lines:
-        data = "\n".join(data_lines)
-        if data != "[DONE]":
-            try:
-                events.append(json.loads(data))
-            except json.JSONDecodeError:
-                pass
-    return events
-
-def walk_json(value):
-    if isinstance(value, dict):
-        yield value
-        for child in value.values():
-            yield from walk_json(child)
-    elif isinstance(value, list):
-        for child in value:
-            yield from walk_json(child)
 
 base_url, key, model = sys.argv[1:4]
 payload = {
     "model": model,
-    "input": (
-        "Generate one simple square icon image: a red circle centered on a white background. "
-        "No text, no watermark."
-    ),
-    "tools": [{"type": "image_generation", "size": "1024x1024"}],
+    "prompt": "A small blue glass cube on a white studio table, product photo lighting.",
+    "size": "1024x1024",
 }
 req = urllib.request.Request(
-    f"{base_url}/v1/responses",
+    f"{base_url}/v1/images/generations",
     data=json.dumps(payload).encode("utf-8"),
     headers={
         "Authorization": f"Bearer {key}",
         "Content-Type": "application/json",
-        "Accept": "application/json",
-        "User-Agent": "Codex Desktop/verify-endpoints",
     },
     method="POST",
 )
-with urllib.request.urlopen(req, timeout=900) as resp:
+with urllib.request.urlopen(req, timeout=300) as resp:
+    body = resp.read().decode("utf-8")
     content_type = resp.headers.get("Content-Type", "")
-    raw = resp.read().decode("utf-8", errors="replace")
 
-if "text/event-stream" in content_type.lower():
-    payloads = parse_sse_payloads(raw)
-    json_nodes = [node for payload in payloads for node in walk_json(payload)]
-    output_types = [node.get("type") for node in json_nodes if isinstance(node.get("type"), str)]
-    image_base64 = [
-        node.get("result")
-        for node in json_nodes
-        if node.get("type") == "image_generation_call" and node.get("result")
-    ]
-    response_id = next((node.get("id") for node in json_nodes if str(node.get("id", "")).startswith("resp_")), None)
-    usage = next((node.get("usage") for node in reversed(json_nodes) if isinstance(node.get("usage"), dict)), {})
-else:
-    payload = json.loads(raw)
-    outputs = payload.get("output") or []
-    output_types = [item.get("type") for item in outputs if isinstance(item, dict)]
-    image_base64 = [
-        item.get("result")
-        for item in outputs
-        if isinstance(item, dict) and item.get("type") == "image_generation_call" and item.get("result")
-    ]
-    response_id = payload.get("id")
-    usage = payload.get("usage", {})
+payload = json.loads(body)
+image_b64 = (payload.get("data") or [{}])[0].get("b64_json", "")
+if not image_b64:
+    raise SystemExit("Image response did not include data[0].b64_json.")
 
-decoded_bytes = 0
-if image_base64:
-    decoded_bytes = len(base64.b64decode(image_base64[0], validate=True))
+image_bytes = base64.b64decode(image_b64)
+if not image_bytes.startswith(b"\x89PNG\r\n\x1a\n"):
+    raise SystemExit("Image response decoded, but it is not a PNG.")
+if len(image_bytes) < 1024:
+    raise SystemExit(f"Image PNG is unexpectedly small: {len(image_bytes)} bytes.")
 
-summary = {
-    "content_type": content_type,
-    "response_id": response_id,
-    "output_types": output_types,
-    "image_calls": len(image_base64),
-    "decoded_image_bytes": decoded_bytes,
-    "usage": usage,
-}
-print(json.dumps(summary, ensure_ascii=False, indent=2))
-
-if "json" not in content_type.lower() and "text/event-stream" not in content_type.lower():
-    raise SystemExit(f"Expected JSON or event-stream response, got {content_type!r}.")
-if not image_base64:
-    raise SystemExit("No image_generation_call.result found in Responses output.")
-if decoded_bytes < 1024:
-    raise SystemExit(f"Generated image payload is unexpectedly small: {decoded_bytes} bytes.")
+with tempfile.NamedTemporaryFile(prefix="zteapi-image-verify-", suffix=".png", delete=True) as handle:
+    handle.write(image_bytes)
+    handle.flush()
+    print(json.dumps({
+        "content_type": content_type,
+        "model": model,
+        "png_bytes": len(image_bytes),
+        "output_file_checked": handle.name,
+    }, ensure_ascii=False, indent=2))
 PY
+
+  if [[ "${VERIFY_USAGE_LOGS}" == "true" ]]; then
+    local row
+    row="$(docker compose exec -T postgres psql -U "${POSTGRES_USER:-sub2api}" "${POSTGRES_DB:-sub2api}" -At -F $'\t' -v before_image="${before_image}" -v model="${model}" <<'SQL'
+select requested_model, coalesce(image_output_tokens,0), coalesce(total_cost,0)
+from usage_logs
+where id > :before_image
+  and requested_model = :'model'
+order by id desc
+limit 1;
+SQL
+)"
+    local actual_model image_tokens total_cost
+    IFS=$'\t' read -r actual_model image_tokens total_cost <<<"${row}"
+    printf '{"requested_model":"%s","image_output_tokens":%s,"total_cost":"%s"}\n' "${actual_model}" "${image_tokens:-0}" "${total_cost:-0}"
+    if [[ "${actual_model}" != "${model}" ]]; then
+      echo "Expected image usage model ${model}, got ${actual_model:-<empty>}." >&2
+      exit 1
+    fi
+    if [[ "${image_tokens:-0}" == "0" ]]; then
+      echo "Expected image_output_tokens to be greater than 0 for ${model}." >&2
+      exit 1
+    fi
+  fi
 }
 
 if [[ -n "${NVIDIA_TEST_KEY}" ]]; then
@@ -345,9 +321,10 @@ if [[ -n "${GPT_TEST_KEY}" ]]; then
   if [[ "${VERIFY_CODEX_MODEL_GUARD}" == "true" ]]; then
     run_codex_model_guard_test "OpenAI GPT OAuth via Sub2API" "${GPT_TEST_KEY}" "gpt-5.4-mini" "${GPT_TEST_MODEL}" "medium"
   fi
-  if [[ "${VERIFY_GPT_IMAGE_GENERATION}" == "true" ]]; then
-    run_responses_image_generation_test "OpenAI GPT OAuth via Sub2API" "${GPT_TEST_KEY}" "${GPT_IMAGE_TEST_MODEL}"
-  fi
+fi
+
+if [[ "${VERIFY_IMAGE_GENERATION}" == "true" ]]; then
+  run_image_generation_test "OpenAI GPT OAuth via Sub2API" "${GPT_IMAGE_TEST_KEY}" "${GPT_IMAGE_TEST_MODEL}"
 fi
 
 if [[ "${VERIFY_USAGE_LOGS}" == "true" ]]; then

@@ -258,6 +258,7 @@
         <a href="#codex">Codex 配置</a>
         <a href="#generator">配置生成器</a>
         <a href="#http">HTTP 调用</a>
+        <a href="#image">图片生成</a>
         <a href="#sdk">SDK 示例</a>
         <a href="#models">模型</a>
         <a href="#usage">用量与扣费</a>
@@ -274,7 +275,7 @@
         <div class="quick-grid">
           <div class="info"><strong>Base URL</strong><p><code>https://Zteapi.com/v1</code></p></div>
           <div class="info"><strong>认证方式</strong><p><code>Authorization: Bearer YOUR_KEY</code></p></div>
-          <div class="info"><strong>推荐 Codex 模型</strong><p><code>gpt-5.4</code></p></div>
+          <div class="info"><strong>推荐模型</strong><p><code>gpt-5.4</code> 文本，<code>gpt-image-2</code> 生图</p></div>
         </div>
         <div class="quick-grid" style="margin-top:12px">
           <a class="info" href="/register"><strong>用户注册</strong><p>创建普通用户账号</p></a>
@@ -289,9 +290,9 @@
         <table>
           <thead><tr><th>场景</th><th>填写内容</th></tr></thead>
           <tbody>
-            <tr><td>GPT / OpenAI OAuth</td><td>API Key 使用绑定 GPT 组的 <code>sk-...</code>；模型先用 <code>gpt-5.4</code>。</td></tr>
+            <tr><td>GPT / OpenAI OAuth</td><td>API Key 使用绑定 GPT 组的 <code>sk-...</code>；文本先用 <code>gpt-5.4</code>，图片用 <code>gpt-image-2</code>。</td></tr>
             <tr><td>NVIDIA adapter</td><td>API Key 使用绑定 NVIDIA 组的 <code>sk-sub2api-nvidia-...</code>；模型先用 <code>qwen3-next-80b</code>。</td></tr>
-            <tr><td>协议</td><td>优先使用 <code>/v1/responses</code>；老客户端可用 <code>/v1/chat/completions</code>。</td></tr>
+            <tr><td>协议</td><td>文本优先使用 <code>/v1/responses</code>；老客户端可用 <code>/v1/chat/completions</code>。图片使用 <code>/v1/images/generations</code>。</td></tr>
           </tbody>
         </table>
         <div class="warn callout">不要把真实 API Key 写进公开代码、截图、网页或聊天记录。本文档只展示占位符。</div>
@@ -408,11 +409,28 @@ codex -p zteapi-nvidia</code></pre>
         </div>
       </section>
 
+      <section id="image">
+        <h2>图片生成</h2>
+        <p><code>gpt-image-2</code> 使用 GPT / OpenAI OAuth key，并且必须走 Images API。不要把图片模型发到普通聊天或 Responses 接口。</p>
+        <div class="codebox">
+          <div class="code-title"><span>curl</span><button class="copy">复制</button></div>
+          <pre><code>curl https://Zteapi.com/v1/images/generations \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer YOUR_GPT_SUB2API_KEY" \
+  -d '{
+    "model": "gpt-image-2",
+    "prompt": "一只橘猫坐在未来城市窗边，电影感光线",
+    "size": "1024x1024"
+  }'</code></pre>
+        </div>
+        <div class="callout">返回结果里的 <code>data[0].b64_json</code> 是图片 base64 内容。NVIDIA key 不用于图片生成；如果用错 key 或接口，先检查 <code>/v1/models</code> 里当前 key 能看到哪些模型。</div>
+      </section>
+
       <section id="sdk">
         <h2>Python / Node SDK</h2>
         <div class="split">
           <div class="codebox">
-            <div class="code-title"><span>Python</span><button class="copy">复制</button></div>
+            <div class="code-title"><span>Python 文本</span><button class="copy">复制</button></div>
             <pre><code>import os
 from openai import OpenAI
 
@@ -430,7 +448,7 @@ response = client.responses.create(
 print(response.output_text)</code></pre>
           </div>
           <div class="codebox">
-            <div class="code-title"><span>Node.js</span><button class="copy">复制</button></div>
+            <div class="code-title"><span>Node.js 文本</span><button class="copy">复制</button></div>
             <pre><code>import OpenAI from "openai";
 
 const client = new OpenAI({
@@ -446,12 +464,51 @@ const response = await client.responses.create({
 
 console.log(response.output_text);</code></pre>
           </div>
+          <div class="codebox">
+            <div class="code-title"><span>Python 图片</span><button class="copy">复制</button></div>
+            <pre><code>import base64
+import os
+from openai import OpenAI
+
+client = OpenAI(
+    api_key=os.environ["ZTEAPI_GPT_KEY"],
+    base_url="https://Zteapi.com/v1",
+)
+
+image = client.images.generate(
+    model="gpt-image-2",
+    prompt="一只橘猫坐在未来城市窗边，电影感光线",
+    size="1024x1024",
+)
+
+png_bytes = base64.b64decode(image.data[0].b64_json)
+with open("zteapi-image.png", "wb") as f:
+    f.write(png_bytes)</code></pre>
+          </div>
+          <div class="codebox">
+            <div class="code-title"><span>Node.js 图片</span><button class="copy">复制</button></div>
+            <pre><code>import fs from "node:fs";
+import OpenAI from "openai";
+
+const client = new OpenAI({
+  apiKey: process.env.ZTEAPI_GPT_KEY,
+  baseURL: "https://Zteapi.com/v1",
+});
+
+const image = await client.images.generate({
+  model: "gpt-image-2",
+  prompt: "一只橘猫坐在未来城市窗边，电影感光线",
+  size: "1024x1024",
+});
+
+fs.writeFileSync("zteapi-image.png", Buffer.from(image.data[0].b64_json, "base64"));</code></pre>
+          </div>
         </div>
       </section>
 
       <section id="models">
         <h2>模型</h2>
-        <p>GPT OAuth 模型以后台可用模型为准。NVIDIA adapter 当前开放：</p>
+        <p>GPT OAuth 模型以后台可用模型为准，图片生成模型为 <code>gpt-image-2</code>。NVIDIA adapter 当前开放的是文本模型：</p>
         <div class="models">
           <span>qwen3-next-80b</span>
           <span>qwen3-coder-480b</span>
@@ -467,6 +524,7 @@ console.log(response.output_text);</code></pre>
         <h2>用量与扣费</h2>
         <p>真实生成请求完成后，Sub2API 会记录 token 消耗。普通用户看自己的 Usage / 用量页面；管理员看 Admin / Usage Logs 或仪表盘聚合数据。</p>
         <div class="callout">调用 <code>/v1/models</code> 通常不会产生模型 token 消耗。要验证仪表盘变化，请调用 <code>/v1/responses</code> 或 <code>/v1/chat/completions</code>。</div>
+        <div class="callout">图片生成成功后，管理员应在 Usage Logs 里看到 <code>requested_model=gpt-image-2</code>，并检查 <code>image_output_tokens</code>、<code>total_tokens</code> 和 <code>total_cost</code>。</div>
         <div class="warn callout">如果 NVIDIA 模型能看到 <code>input_tokens</code> 和 <code>output_tokens</code>，但 <code>total_cost</code> 是 0，说明该模型在 Sub2API 定价表里还没配置价格或倍率；这不影响调用，但会影响成本统计。</div>
       </section>
 
@@ -485,11 +543,12 @@ console.log(response.output_text);</code></pre>
           <div class="info"><strong>503 unavailable</strong><p>该组没有可用账号，或模型没有开放。</p></div>
           <div class="info"><strong>model not found</strong><p>模型名写错，先用 <code>/v1/models</code> 查看。</p></div>
           <div class="info"><strong>Unsupported parameter</strong><p>移除报错中的参数，例如部分模型不支持温度。</p></div>
+          <div class="info"><strong>图片接口错误</strong><p><code>gpt-image-2</code> 要走 <code>/v1/images/generations</code>。</p></div>
           <div class="info"><strong>Codex 仍走旧配置</strong><p>重启终端或 Codex Desktop，确认 profile。</p></div>
         </div>
       </section>
 
-      <footer>最后更新：2026-05-16。本文档不会保存或上传你的 API Key。</footer>
+      <footer>最后更新：2026-05-23。本文档不会保存或上传你的 API Key。</footer>
     </main>
   </div>
   <script>

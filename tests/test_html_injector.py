@@ -22,16 +22,17 @@ class ResponsesRequestSanitizerTests(unittest.TestCase):
     def tearDown(self):
         html_injector.STRIP_RESPONSES_IMAGE_TOOL = self._strip_default
 
-    def test_keeps_image_generation_tool_by_default(self):
+    def test_strips_image_generation_tool_by_default(self):
         body = b'{"model":"gpt-5.4","input":"hello","tools":[{"type":"image_generation"}]}'
 
         sanitized, changed = html_injector.strip_responses_image_generation_tool(body)
         patched, changes = html_injector.patch_responses_request_body(body, "Codex Desktop/0.131.0-alpha.9")
+        payload = json.loads(sanitized.decode("utf-8"))
 
-        self.assertFalse(changed)
-        self.assertEqual(sanitized, body)
-        self.assertEqual(patched, body)
-        self.assertEqual(changes, [])
+        self.assertTrue(changed)
+        self.assertNotIn("tools", payload)
+        self.assertNotEqual(patched, body)
+        self.assertIn("stripped unsupported Responses image generation tool declaration", changes)
 
     def test_strips_image_generation_tool_only(self):
         html_injector.STRIP_RESPONSES_IMAGE_TOOL = True

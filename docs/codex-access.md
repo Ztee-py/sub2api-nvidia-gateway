@@ -29,7 +29,7 @@ Auth: Authorization: Bearer YOUR_SUB2API_KEY
 
 | Key 类型 | 推荐用途 | 推荐模型 | 说明 |
 | --- | --- | --- | --- |
-| GPT / OpenAI OAuth key | Codex 主力、代码任务、复杂工具调用 | `gpt-5.4` | 这是 Codex 更推荐使用的链路，走 Sub2API 管理的 OpenAI OAuth 账号。 |
+| GPT / OpenAI OAuth key | Codex 主力、代码任务、复杂工具调用、图片生成 | `gpt-5.4` / `gpt-image-2` | 这是 Codex 更推荐使用的链路，走 Sub2API 管理的 OpenAI OAuth 账号；图片生成也使用这个 key。 |
 | NVIDIA key | 普通 OpenAI-compatible 文本调用、轻量测试、备用模型 | `qwen3-next-80b` | NVIDIA adapter 已支持 `/v1/responses` 和 `/v1/chat/completions`，但不建议把它作为复杂 Codex agent 的唯一主力。 |
 
 当前 NVIDIA adapter 模型：
@@ -44,7 +44,7 @@ glm-5.1
 deepseekv4-pro
 ```
 
-GPT OAuth 模型以 Sub2API 后台账号/模型列表为准；当前建议先用已经验证过的 `gpt-5.4`。
+GPT OAuth 模型以 Sub2API 后台账号/模型列表为准；当前建议文本先用已经验证过的 `gpt-5.4`。图片生成使用 `gpt-image-2`，必须调用 `/v1/images/generations`，不要把它发到普通聊天或 Responses 接口。
 
 ## 2. 在 Codex 中配置两个 provider
 
@@ -200,9 +200,26 @@ curl https://Zteapi.com/v1/chat/completions \
   }'
 ```
 
+### 3.4 图片生成
+
+图片生成使用 GPT / OpenAI OAuth key，模型名为 `gpt-image-2`。该模型需要走 Images API：
+
+```bash
+curl https://Zteapi.com/v1/images/generations \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer YOUR_GPT_SUB2API_KEY" \
+  -d '{
+    "model": "gpt-image-2",
+    "prompt": "一只橘猫坐在未来城市窗边，电影感光线",
+    "size": "1024x1024"
+  }'
+```
+
+返回结果里的 `data[0].b64_json` 是图片 base64 内容。NVIDIA key 不用于图片生成；如果用 NVIDIA key 调 `gpt-image-2`，通常会遇到 `model not found`、`no available account` 或权限/分组错误。
+
 ## 4. SDK 示例
 
-Python：
+Python 文本：
 
 ```python
 import os
@@ -222,7 +239,30 @@ response = client.responses.create(
 print(response.output_text)
 ```
 
-Node.js：
+Python 图片：
+
+```python
+import base64
+import os
+from openai import OpenAI
+
+client = OpenAI(
+    api_key=os.environ["ZTEAPI_GPT_KEY"],
+    base_url="https://Zteapi.com/v1",
+)
+
+image = client.images.generate(
+    model="gpt-image-2",
+    prompt="一只橘猫坐在未来城市窗边，电影感光线",
+    size="1024x1024",
+)
+
+png_bytes = base64.b64decode(image.data[0].b64_json)
+with open("zteapi-image.png", "wb") as f:
+    f.write(png_bytes)
+```
+
+Node.js 文本：
 
 ```javascript
 import OpenAI from "openai";
@@ -241,6 +281,26 @@ const response = await client.responses.create({
 console.log(response.output_text);
 ```
 
+Node.js 图片：
+
+```javascript
+import fs from "node:fs";
+import OpenAI from "openai";
+
+const client = new OpenAI({
+  apiKey: process.env.ZTEAPI_GPT_KEY,
+  baseURL: "https://Zteapi.com/v1",
+});
+
+const image = await client.images.generate({
+  model: "gpt-image-2",
+  prompt: "一只橘猫坐在未来城市窗边，电影感光线",
+  size: "1024x1024",
+});
+
+fs.writeFileSync("zteapi-image.png", Buffer.from(image.data[0].b64_json, "base64"));
+```
+
 ## 5. 如何确认扣费和 token 消耗
 
 每次真实生成请求完成后，Sub2API 会写入用量日志。检查顺序：
@@ -254,6 +314,8 @@ console.log(response.output_text);
 
 注意：如果 NVIDIA 模型已经出现 `input_tokens`、`output_tokens`，但 `total_cost` 显示为 `0`，通常不是调用失败，而是该模型在 Sub2API 定价表里还没有配置价格或倍率。上线运营前应在后台为 `qwen3-next-80b`、`qwen3-coder-480b`、`llama-3.3-70b` 等 NVIDIA 模型补齐价格/倍率，否则只能看 token 变化，不能看成本变化。
 
+图片生成成功后，管理员应在 Usage Logs 里看到 `requested_model=gpt-image-2`，并优先检查 `image_output_tokens`、`total_tokens` 和 `total_cost` 是否符合后台定价。
+
 ## 6. 常见错误
 
 | 错误 | 常见原因 | 处理 |
@@ -263,6 +325,7 @@ console.log(response.output_text);
 | `503` / no available account | key 绑定的组没有可用上游账号 | 检查 Sub2API 账号、组、模型白名单和调度状态。 |
 | `model not found` | 模型名写错或没有给该组开放 | 先用 `/v1/models` 看当前 key 能看到哪些模型。 |
 | `Unsupported parameter` | 客户端传了上游不支持的参数 | 按报错移除参数，例如部分模型不支持 `temperature`。 |
+| `gpt-image-2` 发到聊天接口 | 图片模型走错接口 | 改用 `POST /v1/images/generations`，不要发到 `/v1/responses` 或 `/v1/chat/completions`。 |
 | Codex 启动仍走旧 provider | Codex 没读到新配置或环境变量 | 重启终端/Codex Desktop，确认 `config.toml` 的 `model_provider` 和 profile。 |
 
 ## 7. 管理员维护建议
@@ -271,11 +334,13 @@ console.log(response.output_text);
 - 给 NVIDIA 高成本模型配置更高倍率或更低并发，避免 key 池被瞬间打满。
 - 不要在公开文档写真实密钥，只写 `YOUR_SUB2API_KEY`。
 - 暴露过的 user key 应在 Sub2API 后台删除并重建。
+- GPT / OpenAI 渠道需要开放 `gpt-image-2` 并配置图片生成价格/倍率；NVIDIA 渠道不要配置图片模型。
 - 每次改 Caddy 或 Docker Compose 后，至少验证 `https://Zteapi.com/docs/`、`https://Zteapi.com/health` 和一次 `/v1/models`。
 
 ## 8. 参考资料
 
 - ZteAPI 当前线上接入页：`https://Zteapi.com/docs/`
 - Sub2API upstream README: `https://github.com/Wei-Shaw/sub2api`
+- OpenAI image generation guide: `https://developers.openai.com/api/docs/guides/image-generation`
 - OpenAI Codex configuration reference: `https://developers.openai.com/codex/config-reference/`
 - OpenAI Codex CLI command options: `https://developers.openai.com/codex/cli/reference`

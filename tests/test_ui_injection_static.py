@@ -113,6 +113,14 @@ class StaticUiInjectionTests(unittest.TestCase):
         self.assertIn('header Cache-Control "public, max-age=300, stale-while-revalidate=60"', caddy)
         self.assertIn("handle {\n\t\theader Cache-Control \"no-store\"", caddy)
 
+    def test_caddy_trusts_cloudflare_real_ip_headers(self):
+        caddy = (ROOT / "cloud-deploy" / "Caddyfile").read_text(encoding="utf-8")
+
+        self.assertIn("trusted_proxies static", caddy)
+        self.assertIn("trusted_proxies_strict", caddy)
+        self.assertIn("173.245.48.0/20", caddy)
+        self.assertIn("2a06:98c0::/29", caddy)
+
     def test_cdn_preflight_checks_dynamic_routes(self):
         source = (ROOT / "cloud-deploy" / "scripts" / "cdn-preflight.sh").read_text(encoding="utf-8")
 
@@ -133,6 +141,39 @@ class StaticUiInjectionTests(unittest.TestCase):
         self.assertIn("CF_API_TOKEN", fallback)
         self.assertIn("proxied", fallback)
         self.assertIn("dry-run only", fallback)
+
+    def test_public_docs_include_image_generation_access(self):
+        markdown = (ROOT / "docs" / "codex-access.md").read_text(encoding="utf-8")
+        html = (ROOT / "cloud-deploy" / "public" / "docs" / "index.html").read_text(encoding="utf-8")
+
+        for source in (markdown, html):
+            self.assertIn("gpt-image-2", source)
+            self.assertIn("/v1/images/generations", source)
+            self.assertIn("YOUR_GPT_SUB2API_KEY", source)
+            self.assertIn("data[0].b64_json", source)
+
+        self.assertIn("NVIDIA key 不用于图片生成", markdown)
+        self.assertIn("NVIDIA key 不用于图片生成", html)
+
+    def test_verify_endpoints_can_optionally_check_image_generation(self):
+        source = (ROOT / "cloud-deploy" / "scripts" / "verify-endpoints.sh").read_text(encoding="utf-8")
+
+        self.assertIn("VERIFY_IMAGE_GENERATION", source)
+        self.assertIn('VERIFY_IMAGE_GENERATION="${VERIFY_IMAGE_GENERATION:-false}"', source)
+        self.assertIn("GPT_IMAGE_TEST_KEY", source)
+        self.assertIn("GPT_IMAGE_TEST_MODEL", source)
+        self.assertIn("/v1/images/generations", source)
+        self.assertIn("data[0].b64_json", source)
+        self.assertIn("image_output_tokens", source)
+
+    def test_responses_image_tool_is_stripped_by_default(self):
+        injector = (ROOT / "cloud-deploy" / "html-injector" / "server.py").read_text(encoding="utf-8")
+        compose = (ROOT / "cloud-deploy" / "docker-compose.yml").read_text(encoding="utf-8")
+        env_example = (ROOT / "cloud-deploy" / ".env.example").read_text(encoding="utf-8")
+
+        self.assertIn('os.environ.get("STRIP_RESPONSES_IMAGE_TOOL", "true")', injector)
+        self.assertIn("STRIP_RESPONSES_IMAGE_TOOL=${STRIP_RESPONSES_IMAGE_TOOL:-true}", compose)
+        self.assertIn("STRIP_RESPONSES_IMAGE_TOOL=true", env_example)
 
 
 if __name__ == "__main__":

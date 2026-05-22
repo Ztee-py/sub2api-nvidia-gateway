@@ -4,9 +4,7 @@ This stack can run behind a Hong Kong anti-DDoS CDN or Cloudflare. Keep Caddy as
 
 ## Preferred edge
 
-Use the Hong Kong anti-DDoS CDN first when it is active, because the site has China/Asia users and dynamic routes such as login, API calls and QR-code payment polling.
-
-Use Cloudflare as the fallback when the Hong Kong CDN expires or becomes unavailable.
+Use Cloudflare as the current primary edge. Keep the Hong Kong anti-DDoS CDN prepared as a separate future cutover path, but do not stack it in front of or behind Cloudflare for the same production hostname unless you are deliberately debugging a short maintenance window.
 
 Current CNMCDN preparation for `Zteapi.com`:
 
@@ -103,7 +101,7 @@ ORIGIN_IP=38.97.254.150 \
 
 ## Cloudflare fallback
 
-If the Hong Kong CDN expires, move DNS to Cloudflare:
+Cloudflare is the current primary setup for `Zteapi.com`:
 
 1. Create a Cloudflare account.
 2. Add `Zteapi.com`.
@@ -114,7 +112,8 @@ If the Hong Kong CDN expires, move DNS to Cloudflare:
 5. SSL/TLS mode: `Full (strict)`. Do not use `Flexible`.
 6. Cache rules: bypass cache for all dynamic routes listed above.
 7. WAF/rate limits: protect login, registration, API and QRPay endpoints.
-8. Run:
+8. Keep `/qrpay/api/watch/*` reachable for the Windows WeChat watcher; do not put managed challenges on watcher callback paths.
+9. Run:
 
 ```bash
 cd /opt/sub2api-nvidia/cloud-deploy

@@ -42,15 +42,15 @@ Name: @ or desired subdomain
 Value: server public IP
 ```
 
-Caddy obtains and renews HTTPS certificates automatically. A Hong Kong anti-DDoS CDN or Cloudflare can sit in front of Caddy. If you use Cloudflare, use `Full` or `Full (strict)` SSL/TLS, not `Flexible`.
+Caddy obtains and renews HTTPS certificates automatically. The current primary edge for `Zteapi.com` is Cloudflare in front of Caddy. Use `Full (strict)` SSL/TLS, not `Flexible`.
 
-After any CDN cutover, run:
+After Cloudflare DNS and cache rules are applied, run:
 
 ```bash
-BASE_URL=https://Zteapi.com ORIGIN_IP=YOUR_SERVER_IP EXPECTED_CDN=hongkong ./scripts/cdn-preflight.sh
+BASE_URL=https://Zteapi.com ORIGIN_IP=38.97.254.150 EXPECTED_CDN=cloudflare ./scripts/cdn-preflight.sh
 ```
 
-Use `EXPECTED_CDN=cloudflare` after switching to Cloudflare. See [CDN cutover runbook](../docs/cdn-cutover.md) for cache, WAF and origin-lockdown rules.
+See [CDN cutover runbook](../docs/cdn-cutover.md) for Cloudflare cache, WAF, watcher-callback and origin-lockdown rules. Keep the prepared CNMCDN path separate; do not stack Cloudflare and CNMCDN on the same production hostname.
 
 For the prepared CNMCDN site, status and expiry checks can be run with:
 
@@ -62,7 +62,7 @@ ORIGIN_IP=38.97.254.150 \
 ./scripts/cdn-status.sh
 ```
 
-Cloudflare fallback DNS record updates are scripted, but only after the Cloudflare account, zone, nameservers and API token exist:
+Cloudflare DNS record updates are scripted, but only after the Cloudflare account, zone, nameservers and API token exist:
 
 ```bash
 CF_API_TOKEN='cloudflare-api-token-with-dns-edit' \
