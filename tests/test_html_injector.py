@@ -16,7 +16,25 @@ spec.loader.exec_module(html_injector)
 
 
 class ResponsesRequestSanitizerTests(unittest.TestCase):
+    def setUp(self):
+        self._strip_default = html_injector.STRIP_RESPONSES_IMAGE_TOOL
+
+    def tearDown(self):
+        html_injector.STRIP_RESPONSES_IMAGE_TOOL = self._strip_default
+
+    def test_keeps_image_generation_tool_by_default(self):
+        body = b'{"model":"gpt-5.4","input":"hello","tools":[{"type":"image_generation"}]}'
+
+        sanitized, changed = html_injector.strip_responses_image_generation_tool(body)
+        patched, changes = html_injector.patch_responses_request_body(body, "Codex Desktop/0.131.0-alpha.9")
+
+        self.assertFalse(changed)
+        self.assertEqual(sanitized, body)
+        self.assertEqual(patched, body)
+        self.assertEqual(changes, [])
+
     def test_strips_image_generation_tool_only(self):
+        html_injector.STRIP_RESPONSES_IMAGE_TOOL = True
         body = json.dumps(
             {
                 "model": "gpt-5.4",
@@ -38,6 +56,7 @@ class ResponsesRequestSanitizerTests(unittest.TestCase):
         self.assertNotIn("tool_choice", payload)
 
     def test_removes_empty_tools_after_stripping(self):
+        html_injector.STRIP_RESPONSES_IMAGE_TOOL = True
         body = b'{"model":"gpt-5.4","input":"hello","tools":[{"type":"image_generation"}]}'
 
         sanitized, changed = html_injector.strip_responses_image_generation_tool(body)
@@ -55,6 +74,7 @@ class ResponsesRequestSanitizerTests(unittest.TestCase):
         self.assertEqual(sanitized, body)
 
     def test_sanitizes_only_json_responses_posts(self):
+        html_injector.STRIP_RESPONSES_IMAGE_TOOL = True
         self.assertTrue(
             html_injector.should_sanitize_responses_request(
                 "POST", "/v1/responses", "application/json"

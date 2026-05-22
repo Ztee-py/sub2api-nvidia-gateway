@@ -15,10 +15,12 @@ set +a
 BASE_URL="${BASE_URL:-https://${PUBLIC_DOMAIN}}"
 NVIDIA_TEST_MODEL="${NVIDIA_TEST_MODEL:-qwen3-next-80b}"
 GPT_TEST_MODEL="${GPT_TEST_MODEL:-gpt-5.4}"
+GPT_IMAGE_TEST_MODEL="${GPT_IMAGE_TEST_MODEL:-${GPT_TEST_MODEL}}"
 NVIDIA_TEST_KEY="${NVIDIA_TEST_KEY:-}"
 GPT_TEST_KEY="${GPT_TEST_KEY:-}"
 VERIFY_USAGE_LOGS="${VERIFY_USAGE_LOGS:-true}"
 VERIFY_CODEX_MODEL_GUARD="${VERIFY_CODEX_MODEL_GUARD:-true}"
+VERIFY_GPT_IMAGE_GENERATION="${VERIFY_GPT_IMAGE_GENERATION:-true}"
 
 if [[ -z "${PUBLIC_DOMAIN:-}" && -z "${BASE_URL:-}" ]]; then
   echo "PUBLIC_DOMAIN or BASE_URL is required." >&2
@@ -217,6 +219,69 @@ SQL
   fi
 }
 
+run_responses_image_generation_test() {
+  local label="$1"
+  local key="$2"
+  local model="$3"
+
+  echo "== ${label} Responses image generation =="
+  python3 - "${BASE_URL}" "${key}" "${model}" <<'PY'
+import base64
+import json
+import sys
+import urllib.request
+
+base_url, key, model = sys.argv[1:4]
+payload = {
+    "model": model,
+    "input": (
+        "Generate one simple square icon image: a red circle centered on a white background. "
+        "No text, no watermark."
+    ),
+    "tools": [{"type": "image_generation", "size": "1024x1024"}],
+}
+req = urllib.request.Request(
+    f"{base_url}/v1/responses",
+    data=json.dumps(payload).encode("utf-8"),
+    headers={
+        "Authorization": f"Bearer {key}",
+        "Content-Type": "application/json",
+        "Accept": "application/json",
+        "User-Agent": "Codex Desktop/verify-endpoints",
+    },
+    method="POST",
+)
+with urllib.request.urlopen(req, timeout=900) as resp:
+    content_type = resp.headers.get("Content-Type", "")
+    raw = resp.read().decode("utf-8", errors="replace")
+
+payload = json.loads(raw)
+outputs = payload.get("output") or []
+image_calls = [item for item in outputs if item.get("type") == "image_generation_call"]
+image_base64 = [item.get("result") for item in image_calls if item.get("result")]
+decoded_bytes = 0
+if image_base64:
+    decoded_bytes = len(base64.b64decode(image_base64[0], validate=True))
+
+summary = {
+    "content_type": content_type,
+    "response_id": payload.get("id"),
+    "output_types": [item.get("type") for item in outputs],
+    "image_calls": len(image_calls),
+    "decoded_image_bytes": decoded_bytes,
+    "usage": payload.get("usage", {}),
+}
+print(json.dumps(summary, ensure_ascii=False, indent=2))
+
+if "json" not in content_type.lower():
+    raise SystemExit(f"Expected JSON response, got {content_type!r}.")
+if not image_base64:
+    raise SystemExit("No image_generation_call.result found in Responses output.")
+if decoded_bytes < 1024:
+    raise SystemExit(f"Generated image payload is unexpectedly small: {decoded_bytes} bytes.")
+PY
+}
+
 if [[ -n "${NVIDIA_TEST_KEY}" ]]; then
   run_chat_test "NVIDIA adapter via Sub2API" "${NVIDIA_TEST_KEY}" "${NVIDIA_TEST_MODEL}" "NVIDIA_VERIFY_OK"
   run_responses_stream_test "NVIDIA adapter via Sub2API" "${NVIDIA_TEST_KEY}" "${NVIDIA_TEST_MODEL}" "NVIDIA_RESPONSES_STREAM_OK"
@@ -227,6 +292,9 @@ if [[ -n "${GPT_TEST_KEY}" ]]; then
   run_responses_stream_test "OpenAI GPT OAuth via Sub2API" "${GPT_TEST_KEY}" "${GPT_TEST_MODEL}" "GPT_RESPONSES_STREAM_OK"
   if [[ "${VERIFY_CODEX_MODEL_GUARD}" == "true" ]]; then
     run_codex_model_guard_test "OpenAI GPT OAuth via Sub2API" "${GPT_TEST_KEY}" "gpt-5.4-mini" "${GPT_TEST_MODEL}" "medium"
+  fi
+  if [[ "${VERIFY_GPT_IMAGE_GENERATION}" == "true" ]]; then
+    run_responses_image_generation_test "OpenAI GPT OAuth via Sub2API" "${GPT_TEST_KEY}" "${GPT_IMAGE_TEST_MODEL}"
   fi
 fi
 
