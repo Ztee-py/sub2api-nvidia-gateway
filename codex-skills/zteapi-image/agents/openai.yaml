@@ -1,0 +1,4 @@
+interface:
+  display_name: "ZteAPI 生图"
+  short_description: "用同一个 ZteAPI GPT key 生成 PNG 图片"
+  default_prompt: "Use $zteapi-image to generate an image from this prompt: 一只橘猫坐在未来城市窗边，电影感光线"

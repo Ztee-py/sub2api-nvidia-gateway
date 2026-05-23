@@ -1,5 +1,6 @@
 import pathlib
 import unittest
+import zipfile
 
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
@@ -151,9 +152,51 @@ class StaticUiInjectionTests(unittest.TestCase):
             self.assertIn("/v1/images/generations", source)
             self.assertIn("YOUR_GPT_SUB2API_KEY", source)
             self.assertIn("data[0].b64_json", source)
+            self.assertIn("zteapi-image-skill.zip", source)
+            self.assertIn("ZTEAPI_GPT_KEY", source)
+            self.assertIn("用 ZteAPI 生图", source)
+            self.assertIn("同一个 GPT", source)
 
         self.assertIn("NVIDIA key 不用于图片生成", markdown)
         self.assertIn("NVIDIA key 不用于图片生成", html)
+
+    def test_zteapi_image_skill_is_packaged_for_public_download(self):
+        skill_dir = ROOT / "codex-skills" / "zteapi-image"
+        skill = (skill_dir / "SKILL.md").read_text(encoding="utf-8")
+        script = (skill_dir / "scripts" / "generate_zteapi_image.py").read_text(encoding="utf-8")
+        ui = (skill_dir / "agents" / "openai.yaml").read_text(encoding="utf-8")
+        zip_path = ROOT / "cloud-deploy" / "public" / "docs" / "downloads" / "zteapi-image-skill.zip"
+
+        self.assertTrue(zip_path.exists())
+        self.assertIn("name: zteapi-image", skill)
+        self.assertIn("用 ZteAPI 生图", skill)
+        self.assertIn("ZTEAPI_GPT_KEY", skill)
+        self.assertIn("ZTEAPI_IMAGE_KEY", skill)
+        self.assertIn("POST /v1/images/generations", skill)
+        self.assertIn("data[0].b64_json", skill)
+        self.assertIn("![ZteAPI image]", skill)
+
+        self.assertIn('DEFAULT_BASE_URL = "https://Zteapi.com/v1"', script)
+        self.assertIn('DEFAULT_MODEL = "gpt-image-2"', script)
+        self.assertIn('DEFAULT_KEY_ENVS = ("ZTEAPI_GPT_KEY", "ZTEAPI_IMAGE_KEY")', script)
+        self.assertIn('/images/generations', script)
+        self.assertIn('data[0].b64_json', script)
+        self.assertIn("base64.b64decode", script)
+        self.assertIn("PNG_SIGNATURE", script)
+        self.assertIn("experimental_bearer_token", script)
+        self.assertIn("ZteAPI-Codex-Image-Skill/1.0", script)
+        self.assertIn('"Accept": "application/json"', script)
+        self.assertIn('"User-Agent": DEFAULT_USER_AGENT', script)
+        self.assertNotIn("sk-", script)
+        self.assertIn('display_name: "ZteAPI 生图"', ui)
+        self.assertIn("$zteapi-image", ui)
+
+        with zipfile.ZipFile(zip_path) as archive:
+            names = set(archive.namelist())
+        self.assertIn("SKILL.md", names)
+        self.assertIn("agents/openai.yaml", names)
+        self.assertIn("scripts/generate_zteapi_image.py", names)
+        self.assertFalse(any("__pycache__" in name or name.endswith(".pyc") for name in names))
 
     def test_verify_endpoints_can_optionally_check_image_generation(self):
         source = (ROOT / "cloud-deploy" / "scripts" / "verify-endpoints.sh").read_text(encoding="utf-8")

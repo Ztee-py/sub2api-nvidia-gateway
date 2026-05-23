@@ -206,6 +206,19 @@
       font-family: "Cascadia Code", Consolas, monospace;
       font-size: 13px;
     }
+    .download-link {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      min-height: 42px;
+      padding: 9px 13px;
+      border: 1px solid var(--brand);
+      background: var(--brand);
+      color: #fff;
+      border-radius: 6px;
+      font-weight: 800;
+    }
+    .download-link:hover { text-decoration: none; background: var(--brand-dark); }
     .generator {
       display: grid;
       grid-template-columns: minmax(0, 380px) minmax(0, 1fr);
@@ -259,6 +272,7 @@
         <a href="#generator">配置生成器</a>
         <a href="#http">HTTP 调用</a>
         <a href="#image">图片生成</a>
+        <a href="#codex-image-skill">Codex 生图 Skill</a>
         <a href="#sdk">SDK 示例</a>
         <a href="#models">模型</a>
         <a href="#usage">用量与扣费</a>
@@ -295,6 +309,7 @@
             <tr><td>协议</td><td>文本优先使用 <code>/v1/responses</code>；老客户端可用 <code>/v1/chat/completions</code>。图片使用 <code>/v1/images/generations</code>。</td></tr>
           </tbody>
         </table>
+        <div class="callout">同一个 GPT / OpenAI OAuth key 可以同时用于 Codex 文本调用和图片生成。普通用户不需要额外创建生图专用 key。</div>
         <div class="warn callout">不要把真实 API Key 写进公开代码、截图、网页或聊天记录。本文档只展示占位符。</div>
       </section>
 
@@ -424,6 +439,29 @@ codex -p zteapi-nvidia</code></pre>
   }'</code></pre>
         </div>
         <div class="callout">返回结果里的 <code>data[0].b64_json</code> 是图片 base64 内容。NVIDIA key 不用于图片生成；如果用错 key 或接口，先检查 <code>/v1/models</code> 里当前 key 能看到哪些模型。</div>
+      </section>
+
+      <section id="codex-image-skill">
+        <h2>Codex 一句话生图</h2>
+        <p>推荐普通用户安装 ZteAPI 生图 Skill。安装后，用户只要配置同一个 <code>ZTEAPI_GPT_KEY</code>，就可以让 Codex 自动调用 Images API、解码 <code>data[0].b64_json</code>、保存 PNG 并展示图片。</p>
+        <p><a class="download-link" href="/docs/downloads/zteapi-image-skill.zip" download>下载 zteapi-image Skill</a></p>
+        <div class="split">
+          <div class="codebox">
+            <div class="code-title"><span>安装位置</span><button class="copy">复制</button></div>
+            <pre><code>Windows: %USERPROFILE%\.codex\skills\zteapi-image
+macOS/Linux: ~/.codex/skills/zteapi-image</code></pre>
+          </div>
+          <div class="codebox">
+            <div class="code-title"><span>配置同一个 GPT key</span><button class="copy">复制</button></div>
+            <pre><code>[Environment]::SetEnvironmentVariable("ZTEAPI_GPT_KEY", "sk-your-gpt-sub2api-key", "User")</code></pre>
+          </div>
+        </div>
+        <div class="codebox">
+          <div class="code-title"><span>在 Codex 里直接说</span><button class="copy">复制</button></div>
+          <pre><code>用 ZteAPI 生图：一只橘猫坐在未来城市窗边，电影感光线</code></pre>
+        </div>
+        <div class="callout">压缩包解开后，<code>zteapi-image</code> 目录里应直接包含 <code>SKILL.md</code>、<code>agents/openai.yaml</code> 和 <code>scripts/generate_zteapi_image.py</code>。安装或修改环境变量后，请重启 Codex Desktop / Codex CLI。</div>
+        <div class="warn callout"><code>ZTEAPI_IMAGE_KEY</code> 只是兼容高级用户拆分 key 的可选备用变量；最佳默认体验是一个 GPT key 同时用于文本和生图。</div>
       </section>
 
       <section id="sdk">

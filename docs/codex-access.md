@@ -19,6 +19,7 @@ Auth: Authorization: Bearer YOUR_SUB2API_KEY
 用户用量: https://Zteapi.com/usage
 管理后台: https://Zteapi.com/admin
 接入文档: https://Zteapi.com/docs/
+生图 Skill 下载: https://Zteapi.com/docs/downloads/zteapi-image-skill.zip
 ```
 
 普通用户注册或登录后进入 `/dashboard`、`/keys`、`/usage` 等用户页面；管理员后台在 `/admin`，非管理员访问后台会被路由守卫带回用户控制台。
@@ -45,6 +46,8 @@ deepseekv4-pro
 ```
 
 GPT OAuth 模型以 Sub2API 后台账号/模型列表为准；当前建议文本先用已经验证过的 `gpt-5.4`。图片生成使用 `gpt-image-2`，必须调用 `/v1/images/generations`，不要把它发到普通聊天或 Responses 接口。
+
+同一个 GPT / OpenAI OAuth key 可以同时用于 Codex 文本调用和图片生成。普通用户不需要额外创建“生图专用 key”；只要这个 key 所在用户组能看到 `gpt-image-2`，并且后台已配置图片生成价格/倍率即可。
 
 ## 2. 在 Codex 中配置两个 provider
 
@@ -217,6 +220,39 @@ curl https://Zteapi.com/v1/images/generations \
 
 返回结果里的 `data[0].b64_json` 是图片 base64 内容。NVIDIA key 不用于图片生成；如果用 NVIDIA key 调 `gpt-image-2`，通常会遇到 `model not found`、`no available account` 或权限/分组错误。
 
+### 3.5 Codex 一句话生图
+
+普通用户推荐安装 ZteAPI 生图 skill，让 Codex 自动完成请求、读取 `data[0].b64_json`、base64 解码、保存 PNG 和展示图片。
+
+下载地址：
+
+```text
+https://Zteapi.com/docs/downloads/zteapi-image-skill.zip
+```
+
+安装到 Codex：
+
+```text
+Windows: %USERPROFILE%\.codex\skills\zteapi-image
+macOS/Linux: ~/.codex/skills/zteapi-image
+```
+
+解压后目录里应直接包含 `SKILL.md`、`agents/openai.yaml` 和 `scripts/generate_zteapi_image.py`。修改环境变量或安装 skill 后，重启 Codex Desktop / Codex CLI。
+
+用户只需要配置同一个 GPT key：
+
+```powershell
+[Environment]::SetEnvironmentVariable("ZTEAPI_GPT_KEY", "sk-your-gpt-sub2api-key", "User")
+```
+
+然后在 Codex 里直接说：
+
+```text
+用 ZteAPI 生图：一只橘猫坐在未来城市窗边，电影感光线
+```
+
+skill 会调用 `POST https://Zteapi.com/v1/images/generations`，使用 `gpt-image-2`，把返回的 `data[0].b64_json` 解码成 PNG 保存到本地，并把图片展示给用户。`ZTEAPI_IMAGE_KEY` 只是兼容高级用户拆分 key 的可选备用变量，不是必需项。
+
 ## 4. SDK 示例
 
 Python 文本：
@@ -335,6 +371,7 @@ fs.writeFileSync("zteapi-image.png", Buffer.from(image.data[0].b64_json, "base64
 - 不要在公开文档写真实密钥，只写 `YOUR_SUB2API_KEY`。
 - 暴露过的 user key 应在 Sub2API 后台删除并重建。
 - GPT / OpenAI 渠道需要开放 `gpt-image-2` 并配置图片生成价格/倍率；NVIDIA 渠道不要配置图片模型。
+- 面向 Codex 用户分发生图能力时，优先让用户安装 `zteapi-image` skill，并继续使用同一个 `ZTEAPI_GPT_KEY`；不要要求普通用户再维护第二个生图 key。
 - 每次改 Caddy 或 Docker Compose 后，至少验证 `https://Zteapi.com/docs/`、`https://Zteapi.com/health` 和一次 `/v1/models`。
 
 ## 8. 参考资料
