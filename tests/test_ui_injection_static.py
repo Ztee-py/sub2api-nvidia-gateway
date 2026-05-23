@@ -148,6 +148,7 @@ class StaticUiInjectionTests(unittest.TestCase):
         html = (ROOT / "cloud-deploy" / "public" / "docs" / "index.html").read_text(encoding="utf-8")
 
         for source in (markdown, html):
+            self.assertIn("gpt-5.5", source)
             self.assertIn("gpt-image-2", source)
             self.assertIn("/v1/images/generations", source)
             self.assertIn("YOUR_GPT_SUB2API_KEY", source)
@@ -203,6 +204,7 @@ class StaticUiInjectionTests(unittest.TestCase):
 
         self.assertIn("VERIFY_IMAGE_GENERATION", source)
         self.assertIn('VERIFY_IMAGE_GENERATION="${VERIFY_IMAGE_GENERATION:-false}"', source)
+        self.assertIn('GPT_TEST_MODEL="${GPT_TEST_MODEL:-gpt-5.5}"', source)
         self.assertIn("GPT_IMAGE_TEST_KEY", source)
         self.assertIn("GPT_IMAGE_TEST_MODEL", source)
         self.assertIn("VERIFY_USER_AGENT", source)

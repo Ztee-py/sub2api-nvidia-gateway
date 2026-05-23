@@ -289,7 +289,7 @@
         <div class="quick-grid">
           <div class="info"><strong>Base URL</strong><p><code>https://Zteapi.com/v1</code></p></div>
           <div class="info"><strong>认证方式</strong><p><code>Authorization: Bearer YOUR_KEY</code></p></div>
-          <div class="info"><strong>推荐模型</strong><p><code>gpt-5.4</code> 文本，<code>gpt-image-2</code> 生图</p></div>
+          <div class="info"><strong>推荐模型</strong><p><code>gpt-5.5</code> 文本，<code>gpt-image-2</code> 生图</p></div>
         </div>
         <div class="quick-grid" style="margin-top:12px">
           <a class="info" href="/register"><strong>用户注册</strong><p>创建普通用户账号</p></a>
@@ -304,7 +304,7 @@
         <table>
           <thead><tr><th>场景</th><th>填写内容</th></tr></thead>
           <tbody>
-            <tr><td>GPT / OpenAI OAuth</td><td>API Key 使用绑定 GPT 组的 <code>sk-...</code>；文本先用 <code>gpt-5.4</code>，图片用 <code>gpt-image-2</code>。</td></tr>
+            <tr><td>GPT / OpenAI OAuth</td><td>API Key 使用绑定 GPT 组的 <code>sk-...</code>；文本先用 <code>gpt-5.5</code>，图片用 <code>gpt-image-2</code>。</td></tr>
             <tr><td>NVIDIA adapter</td><td>API Key 使用绑定 NVIDIA 组的 <code>sk-sub2api-nvidia-...</code>；模型先用 <code>qwen3-next-80b</code>。</td></tr>
             <tr><td>协议</td><td>文本优先使用 <code>/v1/responses</code>；老客户端可用 <code>/v1/chat/completions</code>。图片使用 <code>/v1/images/generations</code>。</td></tr>
           </tbody>
@@ -325,7 +325,7 @@
         <h3>2. 写入 config.toml</h3>
         <div class="codebox">
           <div class="code-title"><span>config.toml</span><button class="copy">复制</button></div>
-          <pre><code>model = "gpt-5.4"
+          <pre><code>model = "gpt-5.5"
 model_provider = "zteapi_gpt"
 model_reasoning_effort = "medium"
 disable_response_storage = true
@@ -346,7 +346,7 @@ env_key_instructions = "Set ZTEAPI_NVIDIA_KEY to your Sub2API NVIDIA user key."
 stream_idle_timeout_ms = 600000
 
 [profiles.zteapi-gpt]
-model = "gpt-5.4"
+model = "gpt-5.5"
 model_provider = "zteapi_gpt"
 model_reasoning_effort = "medium"
 
@@ -377,7 +377,7 @@ codex -p zteapi-nvidia</code></pre>
             <label for="api-key">API Key</label>
             <input id="api-key" placeholder="sk-...">
             <label for="model">模型</label>
-            <input id="model" value="gpt-5.4">
+            <input id="model" value="gpt-5.5">
             <div class="actions">
               <button id="generate" type="button">生成</button>
               <button id="copy-generated" type="button" class="secondary">复制结果</button>
@@ -405,7 +405,7 @@ codex -p zteapi-nvidia</code></pre>
   -H "Content-Type: application/json" \
   -H "Authorization: Bearer YOUR_GPT_SUB2API_KEY" \
   -d '{
-    "model": "gpt-5.4",
+    "model": "gpt-5.5",
     "input": "只回复 OK",
     "store": false,
     "max_output_tokens": 16
@@ -478,7 +478,7 @@ client = OpenAI(
 )
 
 response = client.responses.create(
-    model="gpt-5.4",
+    model="gpt-5.5",
     input="只回复 OK",
     store=False,
 )
@@ -495,7 +495,7 @@ const client = new OpenAI({
 });
 
 const response = await client.responses.create({
-  model: "gpt-5.4",
+  model: "gpt-5.5",
   input: "只回复 OK",
   store: false,
 });
@@ -610,12 +610,12 @@ fs.writeFileSync("zteapi-image.png", Buffer.from(image.data[0].b64_json, "base64
     var kind = document.getElementById("kind");
     var model = document.getElementById("model");
     kind.addEventListener("change", function () {
-      model.value = kind.value === "gpt" ? "gpt-5.4" : "qwen3-next-80b";
+      model.value = kind.value === "gpt" ? "gpt-5.5" : "qwen3-next-80b";
     });
     document.getElementById("generate").addEventListener("click", function () {
       var selected = kind.value;
       var key = document.getElementById("api-key").value.trim() || "sk-your-sub2api-key";
-      var modelValue = model.value.trim() || (selected === "gpt" ? "gpt-5.4" : "qwen3-next-80b");
+      var modelValue = model.value.trim() || (selected === "gpt" ? "gpt-5.5" : "qwen3-next-80b");
       var provider = selected === "gpt" ? "zteapi_gpt" : "zteapi_nvidia";
       var name = selected === "gpt" ? "ZteAPI GPT OAuth" : "ZteAPI NVIDIA";
       var output = 'model = "' + modelValue + '"\n' +

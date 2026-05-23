@@ -30,7 +30,7 @@ Auth: Authorization: Bearer YOUR_SUB2API_KEY
 
 | Key 类型 | 推荐用途 | 推荐模型 | 说明 |
 | --- | --- | --- | --- |
-| GPT / OpenAI OAuth key | Codex 主力、代码任务、复杂工具调用、图片生成 | `gpt-5.4` / `gpt-image-2` | 这是 Codex 更推荐使用的链路，走 Sub2API 管理的 OpenAI OAuth 账号；图片生成也使用这个 key。 |
+| GPT / OpenAI OAuth key | Codex 主力、代码任务、复杂工具调用、图片生成 | `gpt-5.5` / `gpt-image-2` | 这是 Codex 更推荐使用的链路，走 Sub2API 管理的 OpenAI OAuth 账号；图片生成也使用这个 key。 |
 | NVIDIA key | 普通 OpenAI-compatible 文本调用、轻量测试、备用模型 | `qwen3-next-80b` | NVIDIA adapter 已支持 `/v1/responses` 和 `/v1/chat/completions`，但不建议把它作为复杂 Codex agent 的唯一主力。 |
 
 当前 NVIDIA adapter 模型：
@@ -45,7 +45,7 @@ glm-5.1
 deepseekv4-pro
 ```
 
-GPT OAuth 模型以 Sub2API 后台账号/模型列表为准；当前建议文本先用已经验证过的 `gpt-5.4`。图片生成使用 `gpt-image-2`，必须调用 `/v1/images/generations`，不要把它发到普通聊天或 Responses 接口。
+GPT OAuth 模型以 Sub2API 后台账号/模型列表为准；当前建议文本先用已经验证过的 `gpt-5.5`。图片生成使用 `gpt-image-2`，必须调用 `/v1/images/generations`，不要把它发到普通聊天或 Responses 接口。
 
 同一个 GPT / OpenAI OAuth key 可以同时用于 Codex 文本调用和图片生成。普通用户不需要额外创建“生图专用 key”；只要这个 key 所在用户组能看到 `gpt-image-2`，并且后台已配置图片生成价格/倍率即可。
 
@@ -88,7 +88,7 @@ export ZTEAPI_NVIDIA_KEY="sk-your-nvidia-sub2api-key"
 ### 2.2 `config.toml` 推荐写法
 
 ```toml
-model = "gpt-5.4"
+model = "gpt-5.5"
 model_provider = "zteapi_gpt"
 model_reasoning_effort = "medium"
 disable_response_storage = true
@@ -109,7 +109,7 @@ env_key_instructions = "Set ZTEAPI_NVIDIA_KEY to your Sub2API NVIDIA user key."
 stream_idle_timeout_ms = 600000
 
 [profiles.zteapi-gpt]
-model = "gpt-5.4"
+model = "gpt-5.5"
 model_provider = "zteapi_gpt"
 model_reasoning_effort = "medium"
 
@@ -129,7 +129,7 @@ codex -p zteapi-nvidia
 也可以临时覆盖：
 
 ```bash
-codex -c model_provider=zteapi_gpt -m gpt-5.4
+codex -c model_provider=zteapi_gpt -m gpt-5.5
 codex -c model_provider=zteapi_nvidia -m qwen3-next-80b
 ```
 
@@ -167,7 +167,7 @@ curl https://Zteapi.com/v1/responses \
   -H "Content-Type: application/json" \
   -H "Authorization: Bearer YOUR_GPT_SUB2API_KEY" \
   -d '{
-    "model": "gpt-5.4",
+    "model": "gpt-5.5",
     "input": "只回复 OK",
     "store": false,
     "max_output_tokens": 16
@@ -194,7 +194,7 @@ curl https://Zteapi.com/v1/chat/completions \
   -H "Content-Type: application/json" \
   -H "Authorization: Bearer YOUR_SUB2API_KEY" \
   -d '{
-    "model": "gpt-5.4",
+    "model": "gpt-5.5",
     "messages": [
       {"role": "user", "content": "只回复 OK"}
     ],
@@ -267,7 +267,7 @@ client = OpenAI(
 )
 
 response = client.responses.create(
-    model="gpt-5.4",
+    model="gpt-5.5",
     input="只回复 OK",
     store=False,
 )
@@ -309,7 +309,7 @@ const client = new OpenAI({
 });
 
 const response = await client.responses.create({
-  model: "gpt-5.4",
+  model: "gpt-5.5",
   input: "只回复 OK",
   store: false,
 });
