@@ -71,11 +71,12 @@ class Settings:
     db_name = os.environ.get("DATABASE_DBNAME", os.environ.get("POSTGRES_DB", "sub2api"))
     db_sslmode = os.environ.get("DATABASE_SSLMODE", "disable")
 
-    min_amount = env_decimal("QRPAY_MIN_AMOUNT", "1")
+    min_amount = env_decimal("QRPAY_MIN_AMOUNT", "2")
     max_amount = env_decimal("QRPAY_MAX_AMOUNT", "500")
     quick_amounts = os.environ.get("QRPAY_QUICK_AMOUNTS", "2,10,30,50,100,300,500")
-    order_timeout_minutes = env_int("QRPAY_ORDER_TIMEOUT_MINUTES", 5)
-    max_pending_orders = env_int("QRPAY_MAX_PENDING_ORDERS", 3)
+    quick_recharges = os.environ.get("QRPAY_QUICK_RECHARGES", "2:10,10:72,30:216,50:360,100:777,300:2331,500:3885")
+    order_timeout_minutes = env_int("QRPAY_ORDER_TIMEOUT_MINUTES", 6)
+    max_pending_orders = env_int("QRPAY_MAX_PENDING_ORDERS", 1000)
     amount_jitter_cents = env_int("QRPAY_AMOUNT_JITTER_CENTS", 50)
     amount_jitter_methods = {
         item.strip()
@@ -257,6 +258,55 @@ def parse_money_or_400(value: Any, label: str = "amount") -> Decimal:
         return money_to_decimal(value)
     except (InvalidOperation, TypeError, ValueError) as exc:
         raise HTTPException(400, f"invalid {label}") from exc
+
+
+def parse_quick_recharges(raw: str) -> list[dict[str, Decimal]]:
+    rows: list[dict[str, Decimal]] = []
+    for item in (raw or "").split(","):
+        text = item.strip()
+        if not text:
+            continue
+        if ":" in text:
+            pay_raw, credit_raw = text.split(":", 1)
+        else:
+            pay_raw = credit_raw = text
+        try:
+            pay_amount = money_to_decimal(pay_raw.strip())
+            credit_amount = money_to_decimal(credit_raw.strip())
+        except (InvalidOperation, TypeError, ValueError):
+            continue
+        if pay_amount <= 0 or credit_amount <= 0:
+            continue
+        rows.append({"pay_amount": pay_amount, "credit_amount": credit_amount})
+    return rows
+
+
+def quick_recharge_options() -> list[dict[str, Any]]:
+    configured = parse_quick_recharges(settings.quick_recharges)
+    if not configured:
+        configured = [{"pay_amount": value, "credit_amount": value} for value in parse_quick_amounts()]
+    return [
+        {
+            "pay_amount": decimal_to_float(row["pay_amount"]),
+            "credit_amount": decimal_to_float(row["credit_amount"]),
+        }
+        for row in configured
+        if settings.min_amount <= row["pay_amount"] <= settings.max_amount
+    ]
+
+
+def parse_quick_amounts() -> list[Decimal]:
+    amounts: list[Decimal] = []
+    for item in settings.quick_amounts.split(","):
+        if not item.strip():
+            continue
+        try:
+            amount = money_to_decimal(item.strip())
+        except (InvalidOperation, TypeError, ValueError):
+            continue
+        if amount > 0:
+            amounts.append(amount)
+    return amounts
 
 
 def parse_int_or_400(value: Any, label: str) -> int:
@@ -724,11 +774,14 @@ def select_order_for_update(conn, out_trade_no: str) -> dict[str, Any] | None:
 
 
 def public_order_payload(row: dict[str, Any]) -> dict[str, Any]:
+    credit_amount = decimal_to_float(row["amount"])
+    pay_amount = decimal_to_float(row["pay_amount"])
     return {
         "id": row["id"],
         "out_trade_no": row["out_trade_no"],
-        "amount": decimal_to_float(row["amount"]),
-        "pay_amount": decimal_to_float(row["pay_amount"]),
+        "amount": credit_amount,
+        "credit_amount": credit_amount,
+        "pay_amount": pay_amount,
         "payment_type": row["payment_type"],
         "order_type": row["order_type"],
         "status": row["status"],
@@ -863,6 +916,7 @@ def create_payment_order(conn, req: dict[str, Any], user: dict[str, Any], reques
     plan = None
     plan_id = None
     amount = parse_money_or_400(req.get("amount") or "0")
+    pay_amount_base = amount
     subscription_group_id = None
     subscription_days = None
     if order_type == "subscription":
@@ -873,13 +927,19 @@ def create_payment_order(conn, req: dict[str, Any], user: dict[str, Any], reques
         if not plan or plan.get("group_status") != "active" or plan.get("subscription_type") not in {"standard", "premium", "enterprise"}:
             raise HTTPException(404, "subscription plan is not available")
         amount = parse_money_or_400(plan["price"])
+        pay_amount_base = amount
         subscription_group_id = plan["group_id"]
         subscription_days = compute_validity_days(plan["validity_days"], plan["validity_unit"])
         if subscription_days <= 0:
             raise HTTPException(400, "subscription plan validity must be positive")
     else:
+        credit_amount = parse_money_or_400(req.get("credit_amount") or amount, "credit_amount")
         if amount < settings.min_amount or amount > settings.max_amount:
             raise HTTPException(400, f"amount out of range: {settings.min_amount} - {settings.max_amount}")
+        if credit_amount <= 0:
+            raise HTTPException(400, "credit_amount must be positive")
+        pay_amount_base = amount
+        amount = credit_amount
 
     occupied = []
     if method in settings.amount_jitter_methods:
@@ -895,7 +955,7 @@ def create_payment_order(conn, req: dict[str, Any], user: dict[str, Any], reques
         ).fetchall()
         occupied = [row["pay_amount"] for row in occupied_rows]
     jitter = settings.amount_jitter_cents if method in settings.amount_jitter_methods else 0
-    pay_amount = allocate_unique_amount(amount, occupied, jitter)
+    pay_amount = allocate_unique_amount(pay_amount_base, occupied, jitter)
 
     out_trade_no = make_out_trade_no()
     base = public_base(request)
@@ -907,6 +967,8 @@ def create_payment_order(conn, req: dict[str, Any], user: dict[str, Any], reques
         "provider_instance_id": settings.provider_instance_id,
         "epay_logic": "onecode_or_vmq",
         "requires_watcher": True,
+        "credit_amount": str(amount),
+        "pay_amount_base": str(pay_amount_base),
     }
     row = conn.execute(
         """
@@ -954,7 +1016,18 @@ def create_payment_order(conn, req: dict[str, Any], user: dict[str, Any], reques
             "src_url": request.headers.get("referer", ""),
         },
     ).fetchone()
-    audit(conn, row["id"], "ORDER_CREATED", {"payment_type": method, "order_type": order_type, "pay_amount": str(pay_amount)})
+    audit(
+        conn,
+        row["id"],
+        "ORDER_CREATED",
+        {
+            "payment_type": method,
+            "order_type": order_type,
+            "credit_amount": str(amount),
+            "pay_amount": str(pay_amount),
+            "pay_amount_base": str(pay_amount_base),
+        },
+    )
     return public_order_payload(row)
 
 
@@ -1154,15 +1227,13 @@ async def get_config(request: Request) -> JSONResponse:
         watcher_status = wechat_watcher_summary(conn)
         user = await current_user(request)
         conn.commit()
-    quick_amounts = [
-        decimal_to_float(money_to_decimal(item))
-        for item in settings.quick_amounts.split(",")
-        if item.strip()
-    ]
+    quick_recharges = quick_recharge_options()
+    quick_amounts = [item["pay_amount"] for item in quick_recharges]
     return json_response(
         {
             "methods": enabled_methods(),
             "quick_amounts": quick_amounts,
+            "quick_recharges": quick_recharges,
             "min_amount": decimal_to_float(settings.min_amount),
             "max_amount": decimal_to_float(settings.max_amount),
             "plans": plans,
@@ -1392,7 +1463,7 @@ def render_pay_page(row: dict[str, Any]) -> str:
     <main class="card">
       <div class="inner">
         <div class="order-pill"><span>商户订单号：</span><b>{out_trade_no_html}</b></div>
-        <div class="goods">商品名称：Sub2API {original_amount_html} CNY · {order_type_label_html}</div>
+        <div class="goods">商品名称：Sub2API {order_type_label_html} · 到账 {original_amount_html}U</div>
         <div class="divider"></div>
         <div class="amount">{pay_amount_html}<span>元</span></div>
         <div class="qr-wrap">
@@ -1425,6 +1496,7 @@ def render_pay_page(row: dict[str, Any]) -> str:
         sessionStorage.setItem('zteapi_qrpay_success', JSON.stringify({{
           out_trade_no: item.out_trade_no,
           amount: item.amount,
+          credit_amount: item.credit_amount,
           pay_amount: item.pay_amount,
           order_type: item.order_type
         }}));
@@ -1749,7 +1821,8 @@ INDEX_HTML = """<!doctype html>
     .account-card .label { color:#98a2b3; font-size:14px; margin-bottom:8px; }
     .account-card .value { color:#16a34a; font-size:18px; }
     .amounts { display:grid; grid-template-columns:repeat(3, minmax(0,1fr)); gap:10px; }
-    .amount { height:64px; border:1px solid #d8dee8; background:#fff; border-radius:8px; color:#334155; font:inherit; font-size:22px; cursor:pointer; transition:border-color .16s ease, background .16s ease, color .16s ease; }
+    .amount { min-height:72px; border:1px solid #d8dee8; background:#fff; border-radius:8px; color:#334155; font:inherit; font-size:18px; cursor:pointer; display:flex; flex-direction:column; align-items:center; justify-content:center; gap:4px; transition:border-color .16s ease, background .16s ease, color .16s ease; }
+    .amount small { display:block; color:#16a34a; font-size:13px; font-weight:900; }
     .amount.active { border:2px solid #00c7b7; background:#effdfa; color:#007c75; }
     .field-label { margin:20px 0 10px; color:#344054; font-size:17px; }
     .custom-wrap { position:relative; }
@@ -1761,7 +1834,8 @@ INDEX_HTML = """<!doctype html>
     .method { height:76px; display:flex; align-items:center; justify-content:center; gap:12px; border:1px solid #d8dee8; border-radius:8px; background:#fff; font:inherit; font-size:22px; font-weight:900; cursor:pointer; }
     .method.active { border-color:#20c33a; background:#f0fff4; }
     .wechat-mark { display:inline-grid; place-items:center; width:28px; height:28px; border-radius:50%; color:#fff; background:#12b824; font-size:16px; font-weight:900; }
-    .summary { display:flex; align-items:center; justify-content:space-between; min-height:86px; color:#64748b; font-size:18px; }
+    .summary { display:grid; gap:10px; min-height:86px; color:#64748b; font-size:18px; }
+    .summary-row { display:flex; align-items:center; justify-content:space-between; gap:16px; }
     .summary strong { color:#111827; font-size:18px; font-weight:500; }
     .pay-button { width:100%; min-height:60px; border:0; border-radius:10px; background:#28bd45; color:#fff; font:inherit; font-size:20px; font-weight:900; cursor:pointer; box-shadow:0 8px 16px rgba(34,197,94,.22); }
     .pay-button:disabled { opacity:.5; cursor:not-allowed; }
@@ -1808,7 +1882,7 @@ INDEX_HTML = """<!doctype html>
     .dialog-actions { display:grid; grid-template-columns:1fr 1fr; gap:10px; }
     .view[hidden] { display:none !important; }
     @media (max-width: 820px) { .watch { grid-template-columns:1fr; } .amounts { grid-template-columns:repeat(2,1fr); } .content { margin-top:20px; } .card { padding:22px 16px; } .summary { font-size:16px; } }
-    @media (max-width: 520px) { .topbar { align-items:flex-start; flex-direction:column; } .tabs { grid-template-columns:1fr; } .amounts { grid-template-columns:1fr; } .amount { height:56px; } .dialog-actions { grid-template-columns:1fr; } }
+    @media (max-width: 520px) { .topbar { align-items:flex-start; flex-direction:column; } .tabs { grid-template-columns:1fr; } .amounts { grid-template-columns:1fr; } .amount { min-height:72px; } .dialog-actions { grid-template-columns:1fr; } }
   </style>
 </head>
 <body>
@@ -1827,7 +1901,7 @@ INDEX_HTML = """<!doctype html>
           <div class="card account-card"><div><div class="label">充值账户</div><div class="value">当前余额: <span id="balanceInline">--</span></div></div></div>
           <div class="card"><h2 class="card-title">快捷金额</h2><div class="amounts" id="amounts"></div><div class="field-label">自定义金额</div><div class="custom-wrap"><span class="currency">$</span><input id="customAmount" inputmode="decimal" placeholder="请输入充值金额"></div></div>
           <div class="card"><h2 class="card-title">支付方式</h2><div class="methods" id="methods"></div><p class="warning" id="methodNotice"></p></div>
-          <div class="card summary"><span>支付金额</span><strong>¥<span id="summaryAmount">0.00</span></strong></div>
+          <div class="card summary"><div class="summary-row"><span>支付金额</span><strong>¥<span id="summaryAmount">0.00</span></strong></div><div class="summary-row"><span>到账余额</span><strong><span id="summaryCredit">0.00</span>U</strong></div></div>
           <button class="pay-button" id="createRecharge">确认支付 ¥<span id="submitAmount">0.00</span></button>
           <p class="warning" id="createWarning"></p>
         </section>
@@ -1876,7 +1950,13 @@ INDEX_HTML = """<!doctype html>
     function money(value) { const n = Number(value); return Number.isFinite(n) ? n.toFixed(2) : String(value ?? '0.00'); }
     function showError(err) { document.getElementById('errorBox').textContent = err ? String(err.message || err) : ''; }
     function fmtTime(value) { if (!value) return '-'; const date = new Date(value); return Number.isNaN(date.getTime()) ? String(value).replace('T',' ').slice(0,19) : date.toLocaleString('zh-CN', {hour12:false}); }
-    function selectedAmount() { const custom = document.getElementById('customAmount')?.value.trim(); return custom ? Number(custom) : Number(state.amount || 0); }
+    function selectedPayAmount() { const custom = document.getElementById('customAmount')?.value.trim(); return custom ? Number(custom) : Number(state.amount || 0); }
+    function selectedRecharge() {
+      const payAmount = selectedPayAmount();
+      const options = state.config?.quick_recharges || [];
+      const matched = options.find(item => Number(item.pay_amount) === Number(payAmount));
+      return { pay_amount: payAmount, credit_amount: matched ? Number(matched.credit_amount) : payAmount };
+    }
     function setVisible(id) { ['purchaseView','waitingView','cancelledView','ordersView'].forEach(v => document.getElementById(v).hidden = v !== id); }
     function watcherWarning() { if (state.method !== 'wechat_code') return ''; const status = state.watcherStatus || {}; return status.ok ? '请务必支付页面显示的准确金额，金额不一致将无法自动到账。' : (status.warning || '微信监听暂未确认在线，支付后可能延迟到账，请保留付款截图。'); }
     function renderWatchStatus() {
@@ -1884,7 +1964,7 @@ INDEX_HTML = """<!doctype html>
       box.className = 'watch ' + cls;
       box.innerHTML = [`<div><strong>${html(status.label || '微信监听未启用')}</strong><span>${html(status.monitor_name || '等待本地 watcher 心跳')}</span></div>`, `<div><strong>最近心跳</strong><span>${fmtTime(status.last_heartbeat_at)}</span></div>`, `<div><strong>最近确认订单</strong><span>${fmtTime(status.last_confirmed_order_at)}</span></div>`].join('');
     }
-    function rememberSuccess(item) { try { sessionStorage.setItem('zteapi_qrpay_success', JSON.stringify({ out_trade_no:item.out_trade_no, amount:item.amount, pay_amount:item.pay_amount, order_type:item.order_type })); } catch (_) {} }
+    function rememberSuccess(item) { try { sessionStorage.setItem('zteapi_qrpay_success', JSON.stringify({ out_trade_no:item.out_trade_no, amount:item.amount, credit_amount:item.credit_amount, pay_amount:item.pay_amount, order_type:item.order_type })); } catch (_) {} }
     function stopPolling() { if (state.pollTimer) clearTimeout(state.pollTimer); state.pollTimer = null; }
     function stopCountdown() { if (state.countdownTimer) clearInterval(state.countdownTimer); state.countdownTimer = null; }
     function finishPayment(item) { stopPolling(); stopCountdown(); rememberSuccess(item); if (state.redirectTimer) clearTimeout(state.redirectTimer); state.redirectTimer = setTimeout(goDashboard, 1200); }
@@ -1915,13 +1995,13 @@ INDEX_HTML = """<!doctype html>
       if (push) replaceRoute(name === 'recharge' ? '/purchase' : '/' + (name === 'plans' ? 'subscriptions' : 'orders'));
     }
     function renderConfig() {
-      const quick = state.config.quick_amounts || [];
-      document.getElementById('amounts').innerHTML = quick.map(v => `<button class="amount ${Number(state.amount)===Number(v)?'active':''}" data-amount="${html(v)}">${money(v).replace(/\\.00$/,'')}</button>`).join('');
+      const quick = state.config.quick_recharges || (state.config.quick_amounts || []).map(v => ({pay_amount:v, credit_amount:v}));
+      document.getElementById('amounts').innerHTML = quick.map(item => `<button class="amount ${Number(state.amount)===Number(item.pay_amount)?'active':''}" data-amount="${html(item.pay_amount)}"><span>充值 ${money(item.pay_amount).replace(/\\.00$/,'')} 元</span><small>到账 ${money(item.credit_amount).replace(/\\.00$/,'')}U</small></button>`).join('');
       document.querySelectorAll('.amount').forEach(b => b.onclick = () => { state.amount = Number(b.dataset.amount); document.getElementById('customAmount').value=''; renderConfig(); });
       if (!state.method && state.config.methods[0]) state.method = state.config.methods[0].id;
       document.getElementById('methods').innerHTML = (state.config.methods || []).map(m => `<button class="method ${state.method===m.id?'active':''}" data-method="${html(m.id)}"><span class="wechat-mark">✓</span>${html(m.label)}</button>`).join('');
       document.querySelectorAll('.method').forEach(b => b.onclick = () => { state.method = b.dataset.method; renderConfig(); });
-      const amount = selectedAmount(); document.getElementById('summaryAmount').textContent = money(amount); document.getElementById('submitAmount').textContent = money(amount);
+      const recharge = selectedRecharge(); document.getElementById('summaryAmount').textContent = money(recharge.pay_amount); document.getElementById('summaryCredit').textContent = money(recharge.credit_amount); document.getElementById('submitAmount').textContent = money(recharge.pay_amount);
       document.getElementById('methodNotice').textContent = '请使用微信支付，并支付准确金额；多个同金额订单会自动分配 0.01 元内的唯一金额。';
       document.getElementById('createWarning').textContent = watcherWarning(); renderPlans();
     }
@@ -1933,20 +2013,20 @@ INDEX_HTML = """<!doctype html>
     }
     function renderOrders() {
       if (!state.orders.length) { document.getElementById('ordersTable').innerHTML = '<p class="notice">暂无订单。</p>'; return; }
-      document.getElementById('ordersTable').innerHTML = `<table><thead><tr><th>订单</th><th>类型</th><th>金额</th><th>状态</th><th>时间</th></tr></thead><tbody>${state.orders.map(o => `<tr><td>${html(o.out_trade_no)}</td><td>${html(o.order_type)}</td><td>¥${money(o.pay_amount)}</td><td><span class="pill ${safeClass(o.status)}">${html(o.status)}</span></td><td>${html((o.completed_at || o.paid_at || o.expires_at || '').replace('T',' ').slice(0,19))}</td></tr>`).join('')}</tbody></table>`;
+      document.getElementById('ordersTable').innerHTML = `<table><thead><tr><th>订单</th><th>类型</th><th>实付</th><th>到账</th><th>状态</th><th>时间</th></tr></thead><tbody>${state.orders.map(o => `<tr><td>${html(o.out_trade_no)}</td><td>${html(o.order_type)}</td><td>¥${money(o.pay_amount)}</td><td>${money(o.credit_amount ?? o.amount)}U</td><td><span class="pill ${safeClass(o.status)}">${html(o.status)}</span></td><td>${html((o.completed_at || o.paid_at || o.expires_at || '').replace('T',' ').slice(0,19))}</td></tr>`).join('')}</tbody></table>`;
     }
     async function refresh() {
       showError(''); state.config = await api('/config'); state.watcherStatus = state.config.watcher_status || null;
       document.getElementById('balanceText').textContent = money(state.config.user_balance ?? 0); document.getElementById('balanceInline').textContent = money(state.config.user_balance ?? 0);
       try { state.watcherStatus = await api('/watch/public-status'); } catch (_) {}
-      renderWatchStatus(); if (!state.amount && (state.config.quick_amounts || []).length) state.amount = state.config.quick_amounts[0]; if (!state.method && (state.config.methods || []).length) state.method = state.config.methods[0].id;
+      renderWatchStatus(); if (!state.amount && (state.config.quick_recharges || []).length) state.amount = state.config.quick_recharges[0].pay_amount; if (!state.method && (state.config.methods || []).length) state.method = state.config.methods[0].id;
       renderConfig(); state.orders = await api('/orders/my'); renderOrders();
     }
     async function createOrder(body) {
       try {
         showError(''); if (!state.method) throw new Error('请先选择支付方式');
         const payload = Object.assign({payment_type:state.method}, body);
-        if (!payload.order_type || payload.order_type === 'balance') { const amount = selectedAmount(); if (!amount || amount <= 0) throw new Error('请输入有效充值金额'); payload.order_type = 'balance'; payload.amount = amount; }
+        if (!payload.order_type || payload.order_type === 'balance') { const recharge = selectedRecharge(); if (!recharge.pay_amount || recharge.pay_amount <= 0) throw new Error('请输入有效充值金额'); payload.order_type = 'balance'; payload.amount = recharge.pay_amount; payload.credit_amount = recharge.credit_amount; }
         const order = await api('/orders', {method:'POST', body:JSON.stringify(payload)}); openPay(order); await refresh();
       } catch (err) { showError(err); }
     }

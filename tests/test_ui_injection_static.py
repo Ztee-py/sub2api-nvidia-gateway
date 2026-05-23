@@ -216,6 +216,62 @@ class StaticUiInjectionTests(unittest.TestCase):
         self.assertIn("image_output_tokens", source)
         self.assertIn("image_output_tokens or total_cost", source)
 
+    def test_qrpay_uses_longxia_recharge_standards(self):
+        app_source = (ROOT / "cloud-deploy" / "qrpay-bridge" / "app.py").read_text(encoding="utf-8")
+        compose = (ROOT / "cloud-deploy" / "docker-compose.yml").read_text(encoding="utf-8")
+        env_example = (ROOT / "cloud-deploy" / ".env.example").read_text(encoding="utf-8")
+        sql = (ROOT / "cloud-deploy" / "scripts" / "apply-longxia-pricing.sql").read_text(encoding="utf-8")
+
+        for source in (app_source, compose, env_example):
+            self.assertIn("QRPAY_MIN_AMOUNT", source)
+            self.assertIn("2:10,10:72,30:216,50:360,100:777,300:2331,500:3885", source)
+            self.assertIn("QRPAY_MAX_PENDING_ORDERS", source)
+
+        self.assertIn('order_timeout_minutes = env_int("QRPAY_ORDER_TIMEOUT_MINUTES", 6)', app_source)
+        self.assertIn('max_pending_orders = env_int("QRPAY_MAX_PENDING_ORDERS", 1000)', app_source)
+        self.assertIn("quick_recharges", app_source)
+        self.assertIn("credit_amount", app_source)
+        self.assertIn("pay_amount_base = amount", app_source)
+        self.assertIn(".amount { min-height:72px;", app_source)
+        self.assertIn(".amount { min-height:72px; }", app_source)
+        self.assertIn("充值 ${money(item.pay_amount)", app_source)
+        self.assertIn("到账 ${money(item.credit_amount)", app_source)
+
+        for snippet in (
+            "MIN_RECHARGE_AMOUNT', '2.00'",
+            "MAX_RECHARGE_AMOUNT', '500.00'",
+            "DAILY_RECHARGE_LIMIT', '0.00'",
+            "ORDER_TIMEOUT_MINUTES', '6'",
+            "MAX_PENDING_ORDERS', '1000'",
+            '["gpt-5.3-codex"]',
+            '["gpt-5.4"]',
+            '["gpt-5.5"]',
+            '["gpt-image-2"]',
+            "0.0000025",
+            "0.000015",
+            "0.000005",
+            "0.000030",
+            "0.000008",
+            "0.00000200",
+            "image_price_1k = 0.55",
+            "50U 周套餐",
+            "50U 月套餐",
+            "100U 周套餐",
+            "100U 月套餐",
+            "200U 周套餐",
+            "200U 月套餐",
+            "38::numeric",
+            "160::numeric",
+            "73::numeric",
+            "300::numeric",
+            "152::numeric",
+            "630::numeric",
+        ):
+            self.assertIn(snippet, sql)
+
+        self.assertNotIn("gpt 5.5\"]'::jsonb, 'token'", sql)
+        self.assertNotIn("gpt 5.4\"]'::jsonb, 'token'", sql)
+
     def test_responses_image_tool_is_stripped_by_default(self):
         injector = (ROOT / "cloud-deploy" / "html-injector" / "server.py").read_text(encoding="utf-8")
         compose = (ROOT / "cloud-deploy" / "docker-compose.yml").read_text(encoding="utf-8")

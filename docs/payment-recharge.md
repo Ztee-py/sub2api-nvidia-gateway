@@ -47,23 +47,47 @@ Sub2API 内置支付支持：
 
 ```text
 payment_enabled=true
-MIN_RECHARGE_AMOUNT=1
+MIN_RECHARGE_AMOUNT=2
 MAX_RECHARGE_AMOUNT=500
-DAILY_RECHARGE_LIMIT=1000
-ORDER_TIMEOUT_MINUTES=30
-MAX_PENDING_ORDERS=3
+DAILY_RECHARGE_LIMIT=0
+ORDER_TIMEOUT_MINUTES=6
+MAX_PENDING_ORDERS=1000
 BALANCE_RECHARGE_MULTIPLIER=1
 RECHARGE_FEE_RATE=0
-payment_visible_method_alipay_enabled=false
-payment_visible_method_wxpay_enabled=false
+ENABLED_PAYMENT_TYPES=alipay,wxpay
 ```
 
 含义：
 
-- 用户充值金额最低 1，单笔最高 500，每日最高 1000。
-- 每个用户最多同时保留 3 个待支付订单。
-- 余额按 1:1 入账。
-- 真实支付通道未配置前，不向用户暴露支付宝/微信按钮。
+- 用户实付金额最低 2 元，单笔最高 500 元。
+- `DAILY_RECHARGE_LIMIT=0` 表示不额外设置每日充值上限。
+- 每个用户最多同时保留 1000 个待支付订单。
+- 订单 6 分钟超时。
+- 普通自定义充值按 1:1 入账；快捷充值按下方“实付金额 -> 到账 U”入账。
+- 可见支付方式与 Longxia 当前配置对齐为支付宝和微信；真实支付通道未配置完成前，不要向用户开放对应按钮。
+
+快捷充值标准：
+
+| 实付金额 | 到账余额 |
+| --- | --- |
+| ¥2 | 10U |
+| ¥10 | 72U |
+| ¥30 | 216U |
+| ¥50 | 360U |
+| ¥100 | 777U |
+| ¥300 | 2331U |
+| ¥500 | 3885U |
+
+套餐标准：
+
+| 套餐 | 价格 | 额度规则 |
+| --- | --- | --- |
+| 50U 周套餐 | ¥38 | 有效期 168 小时，每 24 小时刷新 50U，未用不累计 |
+| 50U 月套餐 | ¥160 | 有效期 720 小时，每 24 小时刷新 50U，未用不累计 |
+| 100U 周套餐 | ¥73 | 有效期 168 小时，每 24 小时刷新 100U，未用不累计 |
+| 100U 月套餐 | ¥300 | 有效期 720 小时，每 24 小时刷新 100U，未用不累计 |
+| 200U 周套餐 | ¥152 | 有效期 168 小时，每 24 小时刷新 200U，未用不累计 |
+| 200U 月套餐 | ¥630 | 有效期 720 小时，每 24 小时刷新 200U，未用不累计 |
 
 ## 回调地址
 
@@ -159,7 +183,7 @@ PAYMENT_TEST_TOKEN='sk-user-key' ./scripts/payment-preflight.sh
 
 2. 添加服务商实例。
 3. 只开启一个前台支付按钮。
-4. 用新普通用户创建 1 元或最小金额订单。
+4. 用新普通用户创建 2 元或最小金额订单。
 5. 完成支付。
 6. 查看用户余额是否增加。
 7. 管理后台检查订单状态应从 `PENDING` 变为 `COMPLETED`。

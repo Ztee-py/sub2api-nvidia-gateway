@@ -4,6 +4,7 @@ import sys
 import unittest
 from datetime import timedelta
 from decimal import Decimal
+from types import SimpleNamespace
 from unittest.mock import patch
 
 from fastapi import HTTPException
@@ -27,6 +28,7 @@ def load_qrpay_app():
 class DummyRequest:
     def __init__(self, host="Zteapi.com", proto="https"):
         self.headers = {"host": host, "x-forwarded-proto": proto}
+        self.client = SimpleNamespace(host="127.0.0.1")
 
 
 class DummyConn:
@@ -72,6 +74,9 @@ class DummyResult:
     def fetchone(self):
         return self.value
 
+    def fetchall(self):
+        return self.value
+
 
 class PendingWatchConn:
     def __init__(self, row):
@@ -79,6 +84,46 @@ class PendingWatchConn:
 
     def execute(self, sql, params=()):
         return DummyResult(self.row)
+
+
+class CreateOrderConn:
+    def __init__(self, app, *, plan=None):
+        self.app = app
+        self.plan = plan
+        self.inserted = None
+        self.audits = []
+
+    def execute(self, sql, params=()):
+        normalized = " ".join(str(sql).split()).upper()
+        if "SELECT COUNT(*) AS C FROM PAYMENT_ORDERS" in normalized:
+            return DummyResult({"c": 0})
+        if "FROM SUBSCRIPTION_PLANS SP JOIN GROUPS G" in normalized:
+            return DummyResult(self.plan)
+        if "SELECT PAY_AMOUNT FROM PAYMENT_ORDERS" in normalized:
+            return DummyResult([])
+        if normalized.startswith("INSERT INTO PAYMENT_ORDERS"):
+            self.inserted = dict(params)
+            row = {
+                "id": 101,
+                "out_trade_no": params["out_trade_no"],
+                "amount": params["amount"],
+                "pay_amount": params["pay_amount"],
+                "payment_type": params["payment_type"],
+                "order_type": params["order_type"],
+                "status": "PENDING",
+                "pay_url": params["pay_url"],
+                "expires_at": params["expires_at"],
+                "paid_at": None,
+                "completed_at": None,
+                "plan_id": params["plan_id"],
+                "subscription_group_id": params["subscription_group_id"],
+                "subscription_days": params["subscription_days"],
+            }
+            return DummyResult(row)
+        if normalized.startswith("INSERT INTO PAYMENT_AUDIT_LOGS"):
+            self.audits.append(params)
+            return DummyResult(None)
+        raise AssertionError(f"unexpected SQL: {sql}")
 
 
 class QrpaySecurityTests(unittest.TestCase):
@@ -188,6 +233,9 @@ class QrpaySecurityTests(unittest.TestCase):
             payload = self.app.public_order_payload(row)
         self.assertEqual(payload["qr_image_url"], "https://cdn.example/wechat-fixed.png")
         self.assertEqual(payload["pay_url"], "/qrpay/pay/zqr_20260519safe")
+        self.assertEqual(payload["amount"], 10.0)
+        self.assertEqual(payload["credit_amount"], 10.0)
+        self.assertEqual(payload["pay_amount"], 10.0)
 
     def test_public_order_payload_rejects_unsafe_wechat_qr_image_url(self):
         row = {
@@ -222,6 +270,57 @@ class QrpaySecurityTests(unittest.TestCase):
         self.assertTrue(self.app.parse_bool("1"))
         self.assertFalse(self.app.parse_bool(False))
         self.assertFalse(self.app.parse_bool("no"))
+
+    def test_longxia_quick_recharge_options_are_pay_to_credit_pairs(self):
+        rows = self.app.parse_quick_recharges("2:10,10:72,30:216,50:360,100:777,300:2331,500:3885,bad")
+        self.assertEqual(
+            [(row["pay_amount"], row["credit_amount"]) for row in rows],
+            [
+                (Decimal("2.00"), Decimal("10.00")),
+                (Decimal("10.00"), Decimal("72.00")),
+                (Decimal("30.00"), Decimal("216.00")),
+                (Decimal("50.00"), Decimal("360.00")),
+                (Decimal("100.00"), Decimal("777.00")),
+                (Decimal("300.00"), Decimal("2331.00")),
+                (Decimal("500.00"), Decimal("3885.00")),
+            ],
+        )
+
+    def test_balance_order_stores_credit_amount_and_pay_amount_separately(self):
+        conn = CreateOrderConn(self.app)
+        req = {"payment_type": "wechat_code", "order_type": "balance", "amount": "10", "credit_amount": "72"}
+        user = {"id": 7, "email": "alice@example.com", "username": "alice"}
+        with patch.object(self.app, "enabled_methods", return_value=[{"id": "wechat_code"}]):
+            order = self.app.create_payment_order(conn, req, user, DummyRequest())
+
+        self.assertEqual(conn.inserted["amount"], Decimal("72.00"))
+        self.assertEqual(conn.inserted["pay_amount"], Decimal("10.00"))
+        self.assertEqual(order["credit_amount"], 72.0)
+        self.assertEqual(order["pay_amount"], 10.0)
+
+    def test_subscription_order_uses_plan_price_as_pay_amount(self):
+        conn = CreateOrderConn(
+            self.app,
+            plan={
+                "id": 9,
+                "group_id": 33,
+                "price": Decimal("38.00"),
+                "validity_days": 7,
+                "validity_unit": "day",
+                "group_status": "active",
+                "subscription_type": "standard",
+            },
+        )
+        req = {"payment_type": "wechat_code", "order_type": "subscription", "plan_id": 9}
+        user = {"id": 7, "email": "alice@example.com", "username": "alice"}
+        with patch.object(self.app, "enabled_methods", return_value=[{"id": "wechat_code"}]):
+            order = self.app.create_payment_order(conn, req, user, DummyRequest())
+
+        self.assertEqual(conn.inserted["amount"], Decimal("38.00"))
+        self.assertEqual(conn.inserted["pay_amount"], Decimal("38.00"))
+        self.assertEqual(conn.inserted["subscription_group_id"], 33)
+        self.assertEqual(conn.inserted["subscription_days"], 7)
+        self.assertEqual(order["pay_amount"], 38.0)
 
     def test_pending_wechat_watch_state_is_idle_without_pending_orders(self):
         state = self.app.pending_wechat_watch_state(

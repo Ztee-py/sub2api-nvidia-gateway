@@ -276,6 +276,7 @@
         <a href="#sdk">SDK 示例</a>
         <a href="#models">模型</a>
         <a href="#usage">用量与扣费</a>
+        <a href="#pricing">计费标准</a>
         <a href="#recharge">充值与余额</a>
         <a href="#errors">常见错误</a>
       </nav>
@@ -566,9 +567,64 @@ fs.writeFileSync("zteapi-image.png", Buffer.from(image.data[0].b64_json, "base64
         <div class="warn callout">如果 NVIDIA 模型能看到 <code>input_tokens</code> 和 <code>output_tokens</code>，但 <code>total_cost</code> 是 0，说明该模型在 Sub2API 定价表里还没配置价格或倍率；这不影响调用，但会影响成本统计。</div>
       </section>
 
+      <section id="pricing">
+        <h2>计费标准</h2>
+        <p>当前 ZteAPI 计费口径与 Longxia 当前用户页保持一致，余额单位统一显示为 <code>U</code>。</p>
+        <h3>快捷充值</h3>
+        <table>
+          <thead><tr><th>实付金额</th><th>到账余额</th></tr></thead>
+          <tbody>
+            <tr><td>¥2</td><td>10U</td></tr>
+            <tr><td>¥10</td><td>72U</td></tr>
+            <tr><td>¥30</td><td>216U</td></tr>
+            <tr><td>¥50</td><td>360U</td></tr>
+            <tr><td>¥100</td><td>777U</td></tr>
+            <tr><td>¥300</td><td>2331U</td></tr>
+            <tr><td>¥500</td><td>3885U</td></tr>
+          </tbody>
+        </table>
+        <h3>基础限制</h3>
+        <table>
+          <thead><tr><th>项目</th><th>当前值</th></tr></thead>
+          <tbody>
+            <tr><td>最小充值</td><td>¥2</td></tr>
+            <tr><td>最大充值</td><td>¥500</td></tr>
+            <tr><td>每日充值上限</td><td>0，表示不额外限制</td></tr>
+            <tr><td>待支付订单上限</td><td>1000</td></tr>
+            <tr><td>订单超时</td><td>6 分钟</td></tr>
+            <tr><td>余额入账倍率</td><td>1</td></tr>
+            <tr><td>充值手续费</td><td>0</td></tr>
+          </tbody>
+        </table>
+        <h3>GPT / OpenAI OAuth 模型单价</h3>
+        <table>
+          <thead><tr><th>模型</th><th>输入</th><th>输出</th><th>缓存读取</th><th>图片输出</th></tr></thead>
+          <tbody>
+            <tr><td><code>gpt-5.3-codex</code></td><td>0.0000025U/token</td><td>0.000015U/token</td><td>0.00000025U/token</td><td>-</td></tr>
+            <tr><td><code>gpt-5.4</code></td><td>0.0000025U/token</td><td>0.000015U/token</td><td>0.00000025U/token</td><td>-</td></tr>
+            <tr><td><code>gpt-5.5</code></td><td>0.000005U/token</td><td>0.000030U/token</td><td>0.00000050U/token</td><td>-</td></tr>
+            <tr><td><code>gpt-image-2</code></td><td>0.000008U/token</td><td>-</td><td>0.000002U/token</td><td>0.000030U/token</td></tr>
+          </tbody>
+        </table>
+        <div class="callout">图片组价格：<code>gpt-image-2</code> 所在 GPT / OpenAI 组的 1K、2K、4K 图片价格均为 0.55U/张；最终扣费以 Usage Logs 的 <code>total_cost</code> 为准。</div>
+        <h3>订阅套餐</h3>
+        <table>
+          <thead><tr><th>套餐</th><th>价格</th><th>额度规则</th></tr></thead>
+          <tbody>
+            <tr><td>50U 周套餐</td><td>¥38</td><td>有效期 168 小时，每 24 小时刷新 50U，未用不累计</td></tr>
+            <tr><td>50U 月套餐</td><td>¥160</td><td>有效期 720 小时，每 24 小时刷新 50U，未用不累计</td></tr>
+            <tr><td>100U 周套餐</td><td>¥73</td><td>有效期 168 小时，每 24 小时刷新 100U，未用不累计</td></tr>
+            <tr><td>100U 月套餐</td><td>¥300</td><td>有效期 720 小时，每 24 小时刷新 100U，未用不累计</td></tr>
+            <tr><td>200U 周套餐</td><td>¥152</td><td>有效期 168 小时，每 24 小时刷新 200U，未用不累计</td></tr>
+            <tr><td>200U 月套餐</td><td>¥630</td><td>有效期 720 小时，每 24 小时刷新 200U，未用不累计</td></tr>
+          </tbody>
+        </table>
+      </section>
+
       <section id="recharge">
         <h2>充值与余额</h2>
         <p>如果请求返回 <code>INSUFFICIENT_BALANCE</code>，说明该用户余额不足，和本地是否开启 VPN 没有关系。登录后进入 <a href="/payment">充值页面</a> 完成充值，余额到账后即可继续调用。</p>
+        <div class="callout">快捷充值采用“实付人民币 -> 到账 U”的方式：例如实付 ¥10 到账 72U，实付 ¥100 到账 777U。自定义充值按 1:1 入账。</div>
         <div class="callout">支付成功后系统会通过支付服务商 webhook 验签自动入账。不要把“支付成功跳转页”当作到账依据。</div>
         <div class="warn callout">如果充值页面暂时没有支付方式，说明管理员还没有启用真实收款通道；请联系管理员配置 EasyPay、支付宝、微信或 Stripe。</div>
       </section>

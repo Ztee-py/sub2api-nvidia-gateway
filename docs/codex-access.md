@@ -352,7 +352,57 @@ fs.writeFileSync("zteapi-image.png", Buffer.from(image.data[0].b64_json, "base64
 
 图片生成成功后，管理员应在 Usage Logs 里看到 `requested_model=gpt-image-2`，并优先检查 `image_output_tokens`、`total_tokens` 和 `total_cost` 是否符合后台定价。
 
-## 6. 常见错误
+## 6. 模型计费与充值标准
+
+当前 ZteAPI 计费口径与 Longxia 当前用户页保持一致，余额单位统一显示为 `U`。
+
+快捷充值：
+
+| 实付金额 | 到账余额 |
+| --- | --- |
+| ¥2 | 10U |
+| ¥10 | 72U |
+| ¥30 | 216U |
+| ¥50 | 360U |
+| ¥100 | 777U |
+| ¥300 | 2331U |
+| ¥500 | 3885U |
+
+基础充值限制：
+
+| 项目 | 当前值 |
+| --- | --- |
+| 最小充值 | ¥2 |
+| 最大充值 | ¥500 |
+| 每日充值上限 | 0，表示不额外限制 |
+| 待支付订单上限 | 1000 |
+| 订单超时 | 6 分钟 |
+| 余额入账倍率 | 1 |
+| 充值手续费 | 0 |
+
+GPT / OpenAI OAuth 模型单价：
+
+| 模型 | 输入 | 输出 | 缓存读取 | 图片输出 |
+| --- | --- | --- | --- | --- |
+| `gpt-5.3-codex` | 0.0000025U/token | 0.000015U/token | 0.00000025U/token | - |
+| `gpt-5.4` | 0.0000025U/token | 0.000015U/token | 0.00000025U/token | - |
+| `gpt-5.5` | 0.000005U/token | 0.000030U/token | 0.00000050U/token | - |
+| `gpt-image-2` | 0.000008U/token | - | 0.000002U/token | 0.000030U/token |
+
+图片组价格：`gpt-image-2` 所在 GPT / OpenAI 组的 1K、2K、4K 图片价格均为 0.55U/张；最终扣费仍以 Usage Logs 记录的 `image_output_tokens`、`total_tokens` 和 `total_cost` 为准。
+
+订阅套餐：
+
+| 套餐 | 价格 | 额度规则 |
+| --- | --- | --- |
+| 50U 周套餐 | ¥38 | 有效期 168 小时，每 24 小时刷新 50U，未用不累计 |
+| 50U 月套餐 | ¥160 | 有效期 720 小时，每 24 小时刷新 50U，未用不累计 |
+| 100U 周套餐 | ¥73 | 有效期 168 小时，每 24 小时刷新 100U，未用不累计 |
+| 100U 月套餐 | ¥300 | 有效期 720 小时，每 24 小时刷新 100U，未用不累计 |
+| 200U 周套餐 | ¥152 | 有效期 168 小时，每 24 小时刷新 200U，未用不累计 |
+| 200U 月套餐 | ¥630 | 有效期 720 小时，每 24 小时刷新 200U，未用不累计 |
+
+## 7. 常见错误
 
 | 错误 | 常见原因 | 处理 |
 | --- | --- | --- |
@@ -364,7 +414,7 @@ fs.writeFileSync("zteapi-image.png", Buffer.from(image.data[0].b64_json, "base64
 | `gpt-image-2` 发到聊天接口 | 图片模型走错接口 | 改用 `POST /v1/images/generations`，不要发到 `/v1/responses` 或 `/v1/chat/completions`。 |
 | Codex 启动仍走旧 provider | Codex 没读到新配置或环境变量 | 重启终端/Codex Desktop，确认 `config.toml` 的 `model_provider` 和 profile。 |
 
-## 7. 管理员维护建议
+## 8. 管理员维护建议
 
 - GPT 和 NVIDIA 使用不同用户 key、不同组，方便分别统计和限速。
 - 给 NVIDIA 高成本模型配置更高倍率或更低并发，避免 key 池被瞬间打满。
@@ -374,7 +424,7 @@ fs.writeFileSync("zteapi-image.png", Buffer.from(image.data[0].b64_json, "base64
 - 面向 Codex 用户分发生图能力时，优先让用户安装 `zteapi-image` skill，并继续使用同一个 `ZTEAPI_GPT_KEY`；不要要求普通用户再维护第二个生图 key。
 - 每次改 Caddy 或 Docker Compose 后，至少验证 `https://Zteapi.com/docs/`、`https://Zteapi.com/health` 和一次 `/v1/models`。
 
-## 8. 参考资料
+## 9. 参考资料
 
 - ZteAPI 当前线上接入页：`https://Zteapi.com/docs/`
 - Sub2API upstream README: `https://github.com/Wei-Shaw/sub2api`
