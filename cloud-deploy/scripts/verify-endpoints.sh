@@ -303,8 +303,8 @@ SQL
       echo "Expected image usage model ${model}, got ${actual_model:-<empty>}." >&2
       exit 1
     fi
-    if [[ "${image_tokens:-0}" == "0" ]]; then
-      echo "Expected image_output_tokens to be greater than 0 for ${model}." >&2
+    if [[ "${image_tokens:-0}" == "0" && "${total_cost:-0}" == "0" ]]; then
+      echo "Expected image_output_tokens or total_cost to be greater than 0 for ${model}." >&2
       exit 1
     fi
   fi

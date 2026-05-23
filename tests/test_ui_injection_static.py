@@ -165,6 +165,7 @@ class StaticUiInjectionTests(unittest.TestCase):
         self.assertIn("/v1/images/generations", source)
         self.assertIn("data[0].b64_json", source)
         self.assertIn("image_output_tokens", source)
+        self.assertIn("image_output_tokens or total_cost", source)
 
     def test_responses_image_tool_is_stripped_by_default(self):
         injector = (ROOT / "cloud-deploy" / "html-injector" / "server.py").read_text(encoding="utf-8")
