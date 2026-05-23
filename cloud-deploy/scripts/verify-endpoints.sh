@@ -13,6 +13,7 @@ source ./.env
 set +a
 
 BASE_URL="${BASE_URL:-https://${PUBLIC_DOMAIN}}"
+VERIFY_USER_AGENT="${VERIFY_USER_AGENT:-ZteAPI-Verify-Endpoints/1.0 (+https://Zteapi.com/docs/)}"
 NVIDIA_TEST_MODEL="${NVIDIA_TEST_MODEL:-qwen3-next-80b}"
 GPT_TEST_MODEL="${GPT_TEST_MODEL:-gpt-5.4}"
 GPT_IMAGE_TEST_MODEL="${GPT_IMAGE_TEST_MODEL:-gpt-image-2}"
@@ -103,12 +104,12 @@ run_responses_stream_test() {
   local expected="$4"
 
   echo "== ${label} Responses stream =="
-  python3 - "${BASE_URL}" "${key}" "${model}" "${expected}" <<'PY'
+  python3 - "${BASE_URL}" "${key}" "${model}" "${expected}" "${VERIFY_USER_AGENT}" <<'PY'
 import json
 import sys
 import urllib.request
 
-base_url, key, model, expected = sys.argv[1:5]
+base_url, key, model, expected, user_agent = sys.argv[1:6]
 payload = {
     "model": model,
     "input": f"Reply exactly: {expected}.",
@@ -122,6 +123,7 @@ req = urllib.request.Request(
         "Authorization": f"Bearer {key}",
         "Content-Type": "application/json",
         "Accept": "text/event-stream",
+        "User-Agent": user_agent,
     },
     method="POST",
 )
@@ -237,14 +239,14 @@ run_image_generation_test() {
     before_image="$(docker compose exec -T postgres psql -U "${POSTGRES_USER:-sub2api}" "${POSTGRES_DB:-sub2api}" -At -c "select coalesce(max(id),0) from usage_logs;")"
   fi
 
-  python3 - "${BASE_URL}" "${key}" "${model}" <<'PY'
+  python3 - "${BASE_URL}" "${key}" "${model}" "${VERIFY_USER_AGENT}" <<'PY'
 import base64
 import json
 import sys
 import tempfile
 import urllib.request
 
-base_url, key, model = sys.argv[1:4]
+base_url, key, model, user_agent = sys.argv[1:5]
 payload = {
     "model": model,
     "prompt": "A small blue glass cube on a white studio table, product photo lighting.",
@@ -256,6 +258,8 @@ req = urllib.request.Request(
     headers={
         "Authorization": f"Bearer {key}",
         "Content-Type": "application/json",
+        "Accept": "application/json",
+        "User-Agent": user_agent,
     },
     method="POST",
 )
